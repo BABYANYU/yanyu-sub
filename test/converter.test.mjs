@@ -18,3 +18,4 @@ test('Surge test-url separator injection blocked',()=>assert.throws(()=>convertT
 test('AnyTLS TLS plugin chain blocked instead of dropped',()=>assert.throws(()=>convertTexts({target:'Surge',sources:[node({type:'anytls',plugin:'shadow-tls','plugin-opts':{version:3,password:'f',host:'front.example.com'}})]}),/插件/));
 test('cross-node dependency blocked on both targets',()=>{for(const t of ['Surge','Mihomo'])assert.throws(()=>convertTexts({target:t,sources:[node({'dialer-proxy':'Upstream'})]}),/依赖/)});
 test('built-in Surge policy name is renamed',()=>{const c=convertTexts({target:'Surge',sources:[node({name:'REJECT-DROP'})]}).content;assert.match(c,/REJECT-DROP 节点=vless|REJECT-DROP 节点=trojan/)});
+test('boolean field smuggling blocked',()=>assert.throws(()=>convertTexts({target:'Surge',sources:[node({tfo:'true,skip-cert-verify=true'})]}),/布尔/));

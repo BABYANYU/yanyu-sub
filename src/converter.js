@@ -12,6 +12,8 @@ const blocked=new Set(['__proto__','prototype','constructor']);
 const RESERVED=new Set(['DIRECT','REJECT','REJECT-DROP','REJECT-NO-DROP','REJECT-TINYGIF','CELLULAR','CELLULAR-ONLY','HYBRID','NO-HYBRID','Proxy']);
 // Fields the Surge producer writes without surrounding quotes.
 const UNQUOTED=new Set(['ws-opts.path','ws-opts.headers','grpc-opts.grpc-service-name','xhttp-opts.path','uuid','token','reality-opts.short-id','reality-opts.public-key','obfs','obfs-password','plugin-opts.password','plugin-opts.host','obfs-opts.password','obfs-opts.host','servername','test-url']);
+// Boolean-like parameters the Surge producer writes inline; a string value can smuggle another option.
+const BOOL_FIELDS=new Set(['tfo','udp','tls','skip-cert-verify','reuse','block-quic','ecn','hybrid','vmess-aead','ws','ws-http-upgrade','grpc','xhttp','xudp','tls-fingerprint','udp-relay']);
 export class ConversionError extends Error{constructor(message){super(message);this.name='ConversionError'}}
 function bad(message){throw new ConversionError(message)}
 function checkTree(obj,depth=0){
@@ -92,6 +94,7 @@ function surgeGuard(n){
   if(typeof v==='string'&&path!=='name'){
    if(/[\r\n\u0000-\u001f\u007f\u2028\u2029\\"]/u.test(v))bad(`节点“${n.name}”的参数无法安全写入 Surge`);
    if(UNQUOTED.has(path)&&/[,=]/u.test(v))bad(`节点“${n.name}”的 ${path} 含 Surge 结构分隔符`);
+   if(BOOL_FIELDS.has(path)&&!['true','false'].includes(v))bad(`节点“${n.name}”的 ${path} 必须是布尔值`);
   }
   if(v&&typeof v==='object')for(const [k,val]of Object.entries(v))walk(val,path?`${path}.${k}`:k);
  }

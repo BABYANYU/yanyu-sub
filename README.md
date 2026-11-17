@@ -28,6 +28,16 @@
 
 ## 维护
 
+代码与维护记录统一在 GitHub：https://github.com/BABYANYU/yanyu-sub
+
+推送到 `main` 后自动执行：`npm ci` → 构建 → 测试 → 生产依赖审计 → 部署 Worker → 核对线上 `/api/health` 返回的 `revision` 是否等于本次提交。
+任一步失败即中断，不会把未通过的版本上线。手动触发在 Actions 页运行 `Deploy`。
+
+`sub.fakeyou.eu.org` 的自定义域名绑定是 Cloudflare 侧的一次性配置，不随每次部署重建；部署令牌只需脚本上传权限。
+如需迁移到新账号，先在 CF 绑定域名，再更新 `CF_ACCOUNT_ID` 与 `CF_API_TOKEN` 两个仓库密钥。
+
+回滚：在 Actions 里对上一个成功提交重跑 `Deploy`，或本地 `npx wrangler rollback`。
+
 Node 24：`npm ci --ignore-scripts`，`npm run build`，`npm test`。
 `src/converter.js` 为输入校验和固定模板；`src/worker.js` 为同源拉取与静态服务；`public/` 为网页。
 `vendor/` 是固定版本的 Sub-Store 解析/输出器子集，三个 Peggy grammar 已预编译，运行时没有动态编译或用户脚本。
