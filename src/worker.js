@@ -9,6 +9,139 @@ function json(body,status=200,extra={}){return Response.json(body,{status,header
 // Cloudflare rejects timers and I/O in the global scope, so prune lazily per request.
 function prune(now){for(const [host,x]of rate)if(now-x.start>60000)rate.delete(host);lastPrune=now}
 function limited(host){const now=Date.now();if(now-lastPrune>60000)prune(now);const x=rate.get(host)||{start:now,n:0};if(now-x.start>=60000){x.start=now;x.n=0}x.n++;rate.set(host,x);return x.n<=10}
+// Short subscription hosting (POST /api/publish, GET|HEAD /s/:token, DELETE /api/publish/:token).
+// Publishing writes durable state, so it gets its own, much smaller bucket than /api/fetch:
+// 5 requests per 10 minutes per CF-Connecting-IP, counted for publish and revoke together.
+const PUBLISH_MAX=2*1024*1024;
+const PUBLISH_WINDOW=10*60*1000;
+const PUBLISH_QUOTA=5;
+const PUBLISH_ATTEMPTS=5;
+const DEFAULT_TTL=604800;
+const TTLS=new Set([3600,86400,604800,2592000]);
+const TARGETS=new Set(['Surge','Mihomo']);
+const TOKEN=/^[A-Za-z0-9]{8}$/;
+const ALPHABET='ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
+const publishRate=new Map();
+let lastPublishPrune=0;
+function publishLimited(host){const now=Date.now();if(now-lastPublishPrune>PUBLISH_WINDOW){for(const[h,x]of publishRate)if(now-x.start>PUBLISH_WINDOW)publishRate.delete(h);lastPublishPrune=now}const x=publishRate.get(host)||{start:now,n:0};if(now-x.start>=PUBLISH_WINDOW){x.start=now;x.n=0}x.n++;publishRate.set(host,x);return x.n<=PUBLISH_QUOTA}
+// 256 is not a multiple of 62, so bytes >= limit are rejected rather than folded in.
+function randomToken(){const limit=Math.floor(256/ALPHABET.length)*ALPHABET.length;let out='';while(out.length<8){const buf=new Uint8Array(8);crypto.getRandomValues(buf);for(const b of buf){if(b<limit&&out.length<8)out+=ALPHABET[b%ALPHABET.length]}}return out}
+function randomHex(bytes){const buf=new Uint8Array(bytes);crypto.getRandomValues(buf);let out='';for(const b of buf)out+=b.toString(16).padStart(2,'0');return out}
+async function sha256Hex(value){const digest=new Uint8Array(await crypto.subtle.digest('SHA-256',new TextEncoder().encode(value)));let out='';for(const b of digest)out+=b.toString(16).padStart(2,'0');return out}
+function equalHex(a,b){if(typeof a!=='string'||typeof b!=='string'||a.length!==64||b.length!==64)return false;let diff=0;for(let i=0;i<64;i++)diff|=a.charCodeAt(i)^b.charCodeAt(i);return diff===0}
+const shortText=(message,status,extra)=>json({message},status,extra);
+const SHORT_DOWN='短链接暂时不可用，请稍后重试';
+const SHORT_MISSING='短链接不存在';
+function binding(env){const kv=env?.CONFIGS;return kv&&typeof kv.get==='function'&&typeof kv.put==='function'&&typeof kv.delete==='function'?kv:null}
+async function handlePublish(request,env,url){
+ if(request.method!=='POST')return shortText('请使用 POST 请求',405,{Allow:'POST'});
+ if(request.headers.get('Origin')!==url.origin||!request.headers.get('content-type')?.startsWith('application/json'))return shortText('请求来源不匹配',403);
+ const kv=binding(env);if(!kv)return shortText('短链接服务未配置',503);
+ const ip=request.headers.get('CF-Connecting-IP')||'unknown';if(!publishLimited(ip))return shortText('请求过于频繁，请稍后重试',429);
+ let text;
+ try{text=await limitedText(request,PUBLISH_MAX)}catch(error){
+  if(error?.message==='SIZE')return shortText('请求内容超过 2 MiB',413);
+  return shortText('请求内容不是有效的 UTF-8 文本',400);
+ }
+ let data;
+ try{data=JSON.parse(text)}catch{return shortText('请求内容不是有效的 JSON',400)}
+ if(!data||typeof data!=='object'||Array.isArray(data))return shortText('请求内容不是有效的 JSON 对象',400);
+ if(typeof data.content!=='string'||!data.content.trim())return shortText('配置内容不能为空',422);
+ if(typeof data.target!=='string'||!TARGETS.has(data.target))return shortText('输出格式必须是 Surge 或 Mihomo',422);
+ let ttl=DEFAULT_TTL;
+ if(data.ttlSeconds!==undefined){
+  if(!TTLS.has(data.ttlSeconds))return shortText('有效期参数不在允许范围内',400);
+  ttl=data.ttlSeconds;
+ }
+ // The short token is the only thing in the URL, so it must be unguessable enough
+ // that a published profile is not discoverable by enumeration.
+ let token='';
+ for(let attempt=0;attempt<PUBLISH_ATTEMPTS;attempt+=1){
+  const candidate=randomToken();let existing;
+  try{existing=await kv.get('s:'+candidate)}catch{return shortText(SHORT_DOWN,503)}
+  if(existing===null||existing===undefined){token=candidate;break}
+ }
+ if(!token)return shortText(SHORT_DOWN,503);
+ const manageToken=randomHex(32);
+ let manageHash;
+ try{manageHash=await sha256Hex(manageToken)}catch{return shortText(SHORT_DOWN,503)}
+ const createdAt=new Date();
+ const expiresAt=new Date(createdAt.getTime()+ttl*1000);
+ try{await kv.put('s:'+token,JSON.stringify({content:data.content,target:data.target,createdAt:createdAt.toISOString(),expiresAt:expiresAt.toISOString(),manageHash}),{expirationTtl:ttl})}catch{return shortText(SHORT_DOWN,503)}
+ return json({url:url.origin+'/s/'+token,expiresAt:expiresAt.toISOString(),manageToken});
+}
+async function serveShort(request,env,url){
+ if(request.method!=='GET'&&request.method!=='HEAD')return shortText('请求方法不受支持',405,{Allow:'GET, HEAD'});
+ const token=url.pathname.slice('/s/'.length);
+ // Anything that is not an exact 8-character token is simply "not found": no
+ // traversal, no debug text, and no echo of the requested path.
+ if(!TOKEN.test(token))return shortText(SHORT_MISSING,404);
+ const kv=binding(env);if(!kv)return shortText('短链接服务未配置',503);
+ let raw;
+ try{raw=await kv.get('s:'+token)}catch{return shortText(SHORT_DOWN,503)}
+ if(raw===null||raw===undefined)return shortText(SHORT_MISSING,404);
+ let record;
+ try{record=JSON.parse(raw)}catch{record=null}
+ if(!record||typeof record.content!=='string')return shortText(SHORT_MISSING,404);
+ // KV expiry is authoritative; this only covers a record that outlived its TTL.
+ const expiry=Date.parse(record.expiresAt);
+ if(Number.isFinite(expiry)&&expiry<=Date.now())return shortText(SHORT_MISSING,404);
+ const headers={'Content-Type':'text/plain; charset=utf-8','Cache-Control':'private, no-store','X-Content-Type-Options':'nosniff','Referrer-Policy':'no-referrer','X-Robots-Tag':'noindex, nofollow'};
+ return new Response(request.method==='HEAD'?null:record.content,{status:200,headers});
+}
+// Compatibility shim: the shipped UI currently puts the 64-hex manage token in the
+// DELETE path instead of the short token. Resolving that alias needs a bounded scan,
+// so it is only allowed when the header carries exactly the same value. Callers that
+// use /api/publish/<short token> never reach this path.
+async function tokenForManageToken(kv,manageToken){
+ if(typeof kv.list!=='function')return '';
+ const target=await sha256Hex(manageToken);
+ let cursor;
+ for(let page=0;page<2;page+=1){
+  const listed=await kv.list({prefix:'s:',limit:100,...(cursor?{cursor}:{})});
+  for(const entry of Array.isArray(listed?.keys)?listed.keys:[]){
+   const name=typeof entry==='string'?entry:entry?.name;
+   if(typeof name!=='string'||!TOKEN.test(name.slice(2)))continue;
+   let record;
+   try{record=JSON.parse(await kv.get(name))}catch{continue}
+   if(record&&typeof record.manageHash==='string'&&equalHex(target,record.manageHash.toLowerCase()))return name.slice(2);
+  }
+  if(!listed||listed.list_complete!==false||typeof listed.cursor!=='string'||!listed.cursor)break;
+  cursor=listed.cursor;
+ }
+ return '';
+}
+async function revokeShort(request,env,url,pathToken){
+ if(request.method!=='DELETE')return shortText('请求方法不受支持',405,{Allow:'DELETE'});
+ if(request.headers.get('Origin')!==url.origin)return shortText('请求来源不匹配',403);
+ // Validate the path shape before touching storage so a malformed URL is a plain
+ // 404 and never reveals whether the hosting backend is configured.
+ let token=pathToken;
+ let alias=null;
+ if(!TOKEN.test(token)){
+  const header=request.headers.get('X-Manage-Token')||'';
+  if(!/^[0-9a-f]{64}$/.test(token)||header!==token)return shortText(SHORT_MISSING,404);
+  alias=header;
+ }
+ const kv=binding(env);if(!kv)return shortText('短链接服务未配置',503);
+ const ip=request.headers.get('CF-Connecting-IP')||'unknown';if(!publishLimited(ip))return shortText('请求过于频繁，请稍后重试',429);
+ if(alias){
+  try{token=await tokenForManageToken(kv,alias)}catch{return shortText(SHORT_DOWN,503)}
+  if(!token)return shortText(SHORT_MISSING,404);
+ }
+ let raw;
+ try{raw=await kv.get('s:'+token)}catch{return shortText(SHORT_DOWN,503)}
+ if(raw===null||raw===undefined)return shortText(SHORT_MISSING,404);
+ let record;
+ try{record=JSON.parse(raw)}catch{record=null}
+ const provided=request.headers.get('X-Manage-Token')||'';
+ if(!record||typeof record.manageHash!=='string'||!provided)return shortText('管理令牌无效',403);
+ let digest;
+ try{digest=await sha256Hex(provided)}catch{return shortText(SHORT_DOWN,503)}
+ if(!equalHex(digest,record.manageHash.toLowerCase()))return shortText('管理令牌无效',403);
+ try{await kv.delete('s:'+token)}catch{return shortText('撤销失败，请稍后重试',503)}
+ return new Response(null,{status:204,headers:{'Cache-Control':'private, no-store','X-Content-Type-Options':'nosniff','Referrer-Policy':'no-referrer'}});
+}
 export function validateSource(value,ownHost){
  if(typeof value!=='string'||value.length>8192||/[\u0000-\u0020\\]/u.test(value))throw Error('URL');
  const u=new URL(value);
@@ -44,6 +177,9 @@ export default {async fetch(request,env){
    }finally{clearTimeout(timer)}
   }catch(error){return json({message:error?.message==='SIZE'?'订阅内容超过 1 MiB':error?.message==='SOURCE_DENIED'?'订阅地址未通过网络策略检查':'订阅读取失败，请检查 HTTPS 链接或粘贴订阅内容'},error?.message==='SIZE'?413:422)}
  }
+ if(url.pathname==='/api/publish')return handlePublish(request,env,url);
+ if(url.pathname.startsWith('/api/publish/'))return revokeShort(request,env,url,url.pathname.slice('/api/publish/'.length));
+ if(url.pathname.startsWith('/s/'))return serveShort(request,env,url);
  if(url.pathname.startsWith('/api/'))return json({message:'接口不存在'},404);
  const item=assets[url.pathname==='/'?'/index.html':url.pathname];if(!item)return json({message:'页面不存在'},404);
  const body=item.base64?Uint8Array.from(atob(item.body),c=>c.charCodeAt(0)):item.body;

@@ -145,3 +145,160 @@ test('app.js does not call functions removed with the multi-source UI', () => {
     assert.doesNotMatch(app, new RegExp(`\\b${name}\\s*\\(`), `${name}() was removed with the multi-source UI`);
   }
 });
+
+// ---------- hosted short subscribe link (POST /api/publish) ----------
+
+const publishIds = [
+  'publish', 'publish-ttl', 'publish-status', 'published',
+  'published-url', 'copy-published', 'revoke-published', 'published-expiry',
+];
+
+// Minimal brace matcher: every function here is plain JS, and the ${...} holes in
+// template literals are balanced, so depth counting recovers the body reliably.
+function functionBody(source, name) {
+  const start = source.indexOf(`function ${name}(`);
+  assert.notEqual(start, - 1, `function ${name}() must exist`);
+  const open = source.indexOf('{', start);
+  let depth = 0;
+  for (let i = open; i < source.length; i += 1) {
+    if (source[i] === '{') depth += 1;
+    else if (source[i] === '}') {
+      depth -= 1;
+      if (depth === 0) return source.slice(open + 1, i);
+    }
+  }
+  throw new Error(`unbalanced braces in ${name}()`);
+}
+
+function resultBlock() {
+  const start = html.indexOf('<section id="result"');
+  const end = html.indexOf('</section>', start);
+  assert.ok(start > -1 && end > start, '#result must stay a <section>');
+  return html.slice(start, end);
+}
+
+test('the result panel hosts the subscribe-link block with its own controls', () => {
+  const block = resultBlock();
+  for (const id of publishIds) {
+    const tag = html.match(new RegExp(`<[^>]*\\bid="${id}"[^>]*>`))?.[0] || '';
+    assert.ok(tag, `#${id} must exist in index.html`);
+    assert.ok(block.includes(`id="${id}"`), `#${id} must live inside #result`);
+    assert.equal([...html.matchAll(new RegExp(`\\bid\\s*=\\s*"${id}"`, 'g'))].length, 1, `#${id} must be unique`);
+  }
+  // Publishing must not submit the conversion form.
+  const publishButtonTag = html.match(/<button[^>]*id="publish"[^>]*>/)?.[0] || '';
+  assert.match(publishButtonTag, /type="button"/);
+  assert.match(html, /<button id="publish"[^>]*>生成订阅链接<\/button>/);
+  // The status line is announced, never alerted.
+  const statusTag = html.match(/<[^>]*id="publish-status"[^>]*>/)?.[0] || '';
+  assert.match(statusTag, /role="status"/);
+  assert.match(statusTag, /aria-live="polite"/);
+  // The link itself is read-only and never becomes an anchor the page navigates to.
+  const urlTag = html.match(/<input[^>]*id="published-url"[^>]*>/)?.[0] || '';
+  assert.match(urlTag, /readonly/);
+  assert.match(urlTag, /type="text"/);
+  assert.doesNotMatch(block, /<a\b[^>]*id="published-url"/);
+  // The block stays hidden until app.js reveals it.
+  assert.match(html.match(/<div[^>]*id="published"[^>]*>/)?.[0] || '', /\bhidden\b/);
+  // Both token actions are plain buttons.
+  for (const id of ['copy-published', 'revoke-published']) {
+    assert.match(html.match(new RegExp(`<button[^>]*id="${id}"[^>]*>`))?.[0] || '', /type="button"/);
+  }
+  assert.match(block, /链接等同于密码，请勿公开分享/);
+});
+
+test('the validity select offers 1/7/30 days and defaults to 7', () => {
+  const select = html.match(/<select[^>]*id="publish-ttl"[^>]*>([\s\S]*?)<\/select>/);
+  assert.ok(select, '#publish-ttl must be a <select>');
+  const options = [...select[1].matchAll(/<option([^>]*)value="([^"]+)"([^>]*)>([^<]*)</g)];
+  assert.equal(options.length, 3);
+  assert.deepEqual(options.map((option) => option[2]), ['86400', '604800', '2592000']);
+  const checked = options.filter((option) => /\bselected\b/.test(option[1] + option[3]));
+  assert.equal(checked.length, 1, 'exactly one validity must be preselected');
+  assert.equal(checked[0][2], '604800', 'the default validity is 7 days');
+  // app.js posts the chosen seconds as ttlSeconds and falls back to 7 days.
+  assert.match(app, /ttlSeconds/);
+  assert.match(app, /PUBLISH_TTLS\.has\(publishTtl\.value\)/);
+  assert.match(app, /'604800'/);
+});
+
+test('app.js speaks exactly the /api/publish contract', () => {
+  assert.match(app, /fetch\('\/api\/publish'/);
+  assert.match(app, /method: 'POST'/);
+  assert.match(app, /body: JSON\.stringify\(\{ content: current\.content, target: current\.target, ttlSeconds \}\)/);
+  assert.match(app, /'Content-Type': 'application\/json'/);
+  assert.match(app, /method: 'DELETE'/);
+  assert.match(app, /'X-Manage-Token': current\.manageToken/);
+  assert.match(app, /\/api\/publish\/\$\{encodeURIComponent\(shortToken\)\}/, 'revoke must address the short token');
+  assert.match(app, /current\.url\.split\('\/'\)\.pop\(\)/, 'the short token comes from the published URL');
+  // Response fields the UI depends on.
+  for (const field of ['data?.url', 'data?.manageToken', 'data?.expiresAt']) {
+    assert.ok(app.includes(field), `app.js must read ${field} from the response`);
+  }
+  assert.match(app, /data\?\.message/);
+  // Same cancel/abort envelope as conversion: a stalled publish must not hang the UI.
+  assert.match(app, /withTimeout\(fetch\('\/api\/publish'/, 'publishing must reuse withTimeout()');
+  assert.match(app, /withTimeout\(fetch\(`\/api\/publish\//, 'revoking must reuse withTimeout()');
+  assert.match(app, /error\?\.name === 'TimeoutError'/);
+});
+
+test('a new result, an edited source or a regenerated link clears the old one', () => {
+  const invalidateBody = functionBody(app, 'invalidate');
+  assert.match(invalidateBody, /resetPublication\(\)/, 'invalidate() must drop the published link and token');
+  assert.match(invalidateBody, /updateExportState\(\)/, 'invalidate() must re-gate the export buttons');
+  const resetBody = functionBody(app, 'resetPublication');
+  assert.match(resetBody, /publication = null/, 'the manage token must not outlive a reset');
+  assert.match(resetBody, /publishedBlock\.hidden = true/, 'the link block must be hidden again');
+  assert.match(resetBody, /publishedUrl\.value = ''/, 'the URL field must be emptied');
+  assert.match(resetBody, /publishedExpiry\.textContent = ''/);
+  // invalidate() is wired to both inputs that can invalidate a result.
+  assert.match(app, /sourceInput\.addEventListener\('input',[\s\S]{0,120}invalidate\(\)/);
+  assert.match(app, /input\[name="target"\]'\)\.forEach\(\(input\) => input\.addEventListener\('change', invalidate\)\)/);
+  // invalidate() runs on every submit, so a regenerated profile also drops the link.
+  assert.match(app, /invalidate\(\);\n {2}const requestRevision = revision;/);
+  // Publishing a second link drops the first one before asking for a new token.
+  const calls = app.match(/resetPublication\(/g) || [];
+  assert.ok(calls.length >= 3, 'invalidate(), publish and revoke must all reset the publication');
+  assert.match(app, /\/\/ A new link supersedes the old one[\s\S]{0,120}resetPublication\(\);/);
+});
+
+test('the manage token never leaves memory', () => {
+  assert.doesNotMatch(app, /localStorage|sessionStorage|indexedDB|document\.cookie/, 'the token must stay in a module variable');
+  assert.doesNotMatch(app, /console\.(?:log|info|debug|warn|error)\(/, 'never print the token');
+  assert.match(app, /let publication = null/, 'the publication lives in module state');
+  // Copy and revoke must not run without a live publication.
+  assert.match(app, /copyPublished\.addEventListener\('click',[\s\S]{0,80}if \(!publication\) return;/);
+  assert.match(app, /revokePublished\.addEventListener\('click',[\s\S]{0,80}if \(!publication \|\| revoking\) return;/);
+  assert.match(app, /publishStatus\.textContent = publishErrorText\(response\.status, data\?\.message\)/, 'failures stay inline');
+  assert.match(app, /function publishErrorText\(status, message\)[\s\S]{0,140}cleanDiagnostic\(message\)/, 'server text must be scrubbed');
+  assert.doesNotMatch(app, /\balert\s*\(|window\.confirm/, 'no blocking dialogs');
+});
+
+test('the publish block keeps the strict CSP and the no-innerHTML rule', () => {
+  const start = html.indexOf('<div class="publish"');
+  const end = html.indexOf('<details class="preview"');
+  assert.ok(start > -1 && end > start, 'the publish block must precede the config preview');
+  const block = html.slice(start, end);
+  assert.doesNotMatch(block, /<style[\s>]/i);
+  assert.doesNotMatch(block, /\sstyle\s*=/i);
+  assert.doesNotMatch(block, /\son[a-z]+\s*=/i);
+  assert.doesNotMatch(block, /(?:src|href)\s*=\s*"https?:/i);
+  assert.doesNotMatch(block, /javascript:/i);
+  assert.doesNotMatch(block, /innerHTML|insertAdjacentHTML/, 'markup must not carry script');
+  // No new runtime dependency: the entry module still imports only the local converter.
+  const imports = [...app.matchAll(/^import\s.+?from\s+'([^']+)';/gm)].map((match) => match[1]);
+  assert.deepEqual(imports, ['./converter.js']);
+  assert.match(app, /replaceChildren\(\)/);
+});
+
+test('the publish controls fit a 375px viewport', () => {
+  assert.match(css, /\.publish-controls\s*\{[^}]*flex-wrap:\s*wrap/, 'validity + button must wrap instead of overflowing');
+  assert.match(css, /\.publish-controls\s*\{[^}]*gap:/);
+  assert.match(css, /\.published-url\s*\{[^}]*width:\s*100%/);
+  assert.match(css, /\.published-url\s*\{[^}]*min-width:\s*0/);
+  assert.match(css, /\.published-actions\s*\{[^}]*flex-wrap:\s*wrap/);
+  assert.match(css, /\.published-actions\s+\.button\s*\{[^}]*min-width:\s*0/);
+  // Long URLs must not push the layout wider than the card.
+  assert.match(css, /\.publish-status\s*\{[^}]*overflow-wrap:\s*anywhere/);
+  assert.match(css, /\[hidden\]\s*\{\s*display:\s*none\s*!important/, 'the hidden link block must really collapse');
+});

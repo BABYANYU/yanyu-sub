@@ -16,13 +16,23 @@
 输入配置里的其他策略组、规则、脚本、MITM、外部 provider 不会继承，输出固定使用上面的简洁模板。
 不支持的节点会阻止生成，不静默删掉节点。名称中与 Surge 语法冲突的符号会换成空格，重名加序号。
 
+### 订阅链接（本站托管）
+
+生成配置后可点“生成订阅链接”，得到形如 `https://sub.fakeyou.eu.org/s/Ab3dE9kZ` 的短链（8 位 token），可直接导入 Surge / Mihomo。有效期 1 天 / 7 天（默认）/ 30 天，**上限 30 天**；可在本页撤销。
+
+- **链接即凭据**：任何拿到链接的人都能下载完整配置，无需再输密码。配置含你的节点密码/凭据，不要公开分享；泄露后立即撤销，否则只能等过期。
+- 撤销用的管理令牌只在生成时返回一次，仅存在于当前页面内存；丢失即无法撤销。
+- KV 只保存配置文本、格式、时间戳与**管理令牌的 SHA-256 哈希**；不存 IP、UA、来源 URL。
+- 接口：`POST /api/publish`、`GET|HEAD /s/<token>`、`DELETE /api/publish/<token>`（`X-Manage-Token`）。详见 [documentation/HOSTED-LINKS-2026-11-17.md](documentation/HOSTED-LINKS-2026-11-17.md)。
+
 ## 隐私和边界
 
 - 直接粘贴的节点在浏览器内转换，不提交给转换 API。
 - HTTPS 链接只在 POST 正文提交给本站 Cloudflare Worker 拉取，Cloudflare 和源订阅服务会处理该请求；无第三方公共转换后端。
-- 不把订阅写入 KV、D1、R2、浏览器 localStorage；禁用 Worker 可观测日志，不记录完整链接或节点。
+- 默认不保存任何配置：只有你主动点“生成订阅链接”时，才把该配置文本、格式、时间戳和管理令牌哈希写入 Cloudflare KV（`CONFIGS`），并在 TTL 到期或撤销时删除；不写 D1、R2、浏览器 localStorage，禁用 Worker 可观测日志，不记录完整链接或节点。
+- 短链 token 即凭据，KV 里没有账号、IP、UA 和来源地址；`/s/` 响应 `private, no-store` 且 `noindex`。
 - 限制 HTTPS/443、地址检查、零跳转、超时、正文 1 MiB。DNS 预检不是连接级 IP pinning，不能宣称彻底防止 DNS rebinding；Worker 无私网/VPC绑定。
-- 本站提供一次性配置下载，不创建持久订阅或自动刷新链接。要更新配置时重新转换。
+- 一次性下载为默认行为；选择“生成订阅链接”才会创建最长 30 天、可撤销的托管短链，但它不会自动刷新内容或跟随源订阅更新，过期后重新生成。
 - 语法转换不等于实际节点连通。Surge VLESS 需要 iOS 6+；部分 Mihomo 内核与新 Xray REALITY 服务端存在兼容性差异。
 - 上游 YAML 引用需先展开；仅外部 provider 的配置请先导出实际节点内容。
 
@@ -33,7 +43,8 @@
 推送到 `main` 后自动执行：`npm ci` → 构建 → 测试 → 生产依赖审计 → 部署 Worker → 核对线上 `/api/health` 返回的 `revision` 是否等于本次提交。
 任一步失败即中断，不会把未通过的版本上线。手动触发在 Actions 页运行 `Deploy`。
 
-`sub.fakeyou.eu.org` 的自定义域名绑定是 Cloudflare 侧的一次性配置，不随每次部署重建；部署令牌只需脚本上传权限。
+`sub.fakeyou.eu.org` 的自定义域名绑定是 Cloudflare 侧的一次性配置，不随每次部署重建；部署令牌需要脚本上传权限（见下）。
+订阅短链依赖 KV 绑定 `CONFIGS`（namespace `e7205f12788c4a2098c538a230f8f915`），已写入 `wrangler.json` 与 `scripts/deployment.json`：namespace 必须先在部署账号里创建，且 `CF_API_TOKEN` 需要 **Workers KV Storage: Edit** 权限，否则部署会因绑定失败而中断（功能本身在未绑定时返回 503，不会退化上传）。
 如需迁移到新账号，先在 CF 绑定域名，再更新 `CF_ACCOUNT_ID` 与 `CF_API_TOKEN` 两个仓库密钥。
 
 回滚：在 Actions 里对上一个成功提交重跑 `Deploy`，或本地 `npx wrangler rollback`。

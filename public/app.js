@@ -10,15 +10,31 @@ const generate = $('#generate');
 const download = $('#download');
 const copy = $('#copy');
 const acceptPartial = $('#accept-partial');
+const publishButton = $('#publish');
+const publishTtl = $('#publish-ttl');
+const publishStatus = $('#publish-status');
+const publishedBlock = $('#published');
+const publishedUrl = $('#published-url');
+const publishedExpiry = $('#published-expiry');
+const copyPublished = $('#copy-published');
+const revokePublished = $('#revoke-published');
 // Same envelope the converter and the Worker enforce; checked before any request.
 const MAX_URL_LENGTH = 8192;
 const CONVERT_TIMEOUT_MS = 90000;
+const PUBLISH_TIMEOUT_MS = 30000;
+// POST /api/publish accepts a TTL in seconds; the <select> offers exactly these.
+const PUBLISH_TTLS = new Map([['86400', '1 天'], ['604800', '7 天'], ['2592000', '30 天']]);
 // Exact test used by convertSources() in converter.js to treat a source as a link.
 const URL_INPUT = /^https?:\/\/[^\s]+$/;
 const URL_LINE = /^https?:\/\/\S+$/i;
 let revision = 0;
 let running = false;
 let result = null;
+// Live publication for the current result: {url, manageToken, expiresAt, ttlSeconds}.
+// The manage token is deliberately memory-only — never a cookie, never storage.
+let publication = null;
+let publishing = false;
+let revoking = false;
 
 class TimeoutError extends Error {
   constructor() {
@@ -27,15 +43,77 @@ class TimeoutError extends Error {
   }
 }
 
+// Forget the hosted link locally. The manage token must never outlive the result it
+// belongs to, and it is never persisted to any browser storage or a cookie.
+function resetPublication(message = '') {
+  publication = null;
+  publishing = false;
+  revoking = false;
+  publishedBlock.hidden = true;
+  publishedUrl.value = '';
+  publishedExpiry.textContent = '';
+  copyPublished.disabled = true;
+  revokePublished.disabled = true;
+  revokePublished.removeAttribute('aria-busy');
+  publishButton.removeAttribute('aria-busy');
+  publishButton.textContent = '生成订阅链接';
+  publishStatus.textContent = message;
+}
+
+// expiresAt may arrive as ISO-8601, epoch seconds or epoch milliseconds. The UI only
+// shows a short label, so anything unusable falls back to the TTL that was requested.
+function publishedExpiryDate(value, ttlSeconds) {
+  const candidate = typeof value === 'number'
+    ? new Date(value < 1e12 ? value * 1000 : value)
+    : typeof value === 'string' && value.trim() ? new Date(value) : null;
+  if (candidate && Number.isFinite(candidate.getTime())) return candidate;
+  return new Date(Date.now() + ttlSeconds * 1000);
+}
+
+function expiryLabel(date) {
+  const remaining = date.getTime() - Date.now();
+  if (remaining <= 0) return '链接已过期';
+  const days = Math.round(remaining / 86400000);
+  if (days >= 1) return `${days} 天后失效`;
+  return `${Math.max(1, Math.round(remaining / 3600000))} 小时后失效`;
+}
+
+// The publish API answers JSON on success and may answer plain text on error, so both
+// shapes are normalized to {message} without ever echoing the request body.
+async function readBody(response) {
+  try {
+    const text = await response.text();
+    if (!text.trim()) return null;
+    try {
+      return JSON.parse(text);
+    } catch {
+      return { message: text };
+    }
+  } catch {
+    return null;
+  }
+}
+
+// Server messages are shown, but scrubbed: neither the profile nor the manage token
+// may end up in visible text.
+function publishErrorText(status, message) {
+  if (typeof message === 'string' && message.trim()) return cleanDiagnostic(message);
+  if (status === 403) return '请求来源校验失败，请刷新页面后重试。';
+  if (status === 413) return '配置过大，无法生成订阅链接。';
+  if (status === 429) return '生成太频繁，请稍后再试。';
+  if (status === 503) return '订阅服务暂时不可用，请稍后重试。';
+  return '生成订阅链接失败，请稍后重试。';
+}
+
 function invalidate() {
   revision += 1;
   const hadResult = result !== null;
   result = null;
+  resetPublication();
   resultPanel.hidden = true;
   $('#config-preview').value = '';
   errorPanel.hidden = true;
-  download.disabled = true;
-  copy.disabled = true;
+  updateExportState();
   if (hadResult || running) status.textContent = '内容已更改，请重新生成。';
   else status.textContent = '';
 }
@@ -113,9 +191,11 @@ function showError(message, input = null) {
 }
 
 function updateExportState() {
-  const enabled = result && (!result.hasWarnings || acceptPartial.checked);
+  const enabled = Boolean(result) && (!result.hasWarnings || acceptPartial.checked);
   download.disabled = !enabled;
   copy.disabled = !enabled;
+  // Publishing is the third export path, so it follows the same "partial" gate.
+  publishButton.disabled = !enabled || publishing || revoking;
 }
 
 // Credentials live in the generated profile: say so on every export path.
@@ -204,6 +284,129 @@ form.addEventListener('submit', async (event) => {
     generate.disabled = false;
     generate.removeAttribute('aria-busy');
     $('#generate-label').textContent = '生成配置';
+  }
+});
+
+publishButton.addEventListener('click', async () => {
+  if (!result || publishing || revoking || publishButton.disabled) return;
+  const ttlSeconds = PUBLISH_TTLS.has(publishTtl.value) ? Number(publishTtl.value) : 604800;
+  const current = result;
+  const requestRevision = revision;
+  // A new link supersedes the old one: drop the previous URL and token first.
+  resetPublication();
+  publishing = true;
+  publishButton.disabled = true;
+  publishButton.setAttribute('aria-busy', 'true');
+  publishButton.textContent = '生成中…';
+  publishStatus.textContent = '正在生成订阅链接…';
+  try {
+    const response = await withTimeout(fetch('/api/publish', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ content: current.content, target: current.target, ttlSeconds }),
+    }), PUBLISH_TIMEOUT_MS);
+    if (requestRevision !== revision) return;
+    const data = await readBody(response);
+    if (requestRevision !== revision) return;
+    if (!response.ok) {
+      publishStatus.textContent = publishErrorText(response.status, data?.message);
+      return;
+    }
+    const url = typeof data?.url === 'string' ? data.url.trim() : '';
+    const manageToken = typeof data?.manageToken === 'string' ? data.manageToken.trim() : '';
+    if (!/^https?:\/\/\S+$/i.test(url) || !manageToken || manageToken.length > 512) {
+      publishStatus.textContent = '生成订阅链接失败，请稍后重试。';
+      return;
+    }
+    publication = { url, manageToken, expiresAt: publishedExpiryDate(data?.expiresAt, ttlSeconds) };
+    publishedUrl.value = url;
+    publishedExpiry.textContent = expiryLabel(publication.expiresAt);
+    publishedBlock.hidden = false;
+    copyPublished.disabled = false;
+    revokePublished.disabled = false;
+    publishStatus.textContent = `已生成订阅链接（有效期 ${PUBLISH_TTLS.get(String(ttlSeconds))}），可直接导入代理软件。`;
+    publishButton.textContent = '重新生成';
+  } catch (error) {
+    if (requestRevision !== revision) return;
+    publishStatus.textContent = error?.name === 'TimeoutError'
+      ? `生成订阅链接超过 ${Math.round(PUBLISH_TIMEOUT_MS / 1000)} 秒未完成，请检查网络后重试。`
+      : '生成订阅链接失败，请检查网络后重试。';
+  } finally {
+    if (requestRevision === revision) {
+      publishing = false;
+      publishButton.removeAttribute('aria-busy');
+      if (!publication) publishButton.textContent = '生成订阅链接';
+      updateExportState();
+    }
+  }
+});
+
+copyPublished.addEventListener('click', async () => {
+  if (!publication) return;
+  const current = publication;
+  const copiedNote = '订阅链接已复制，可直接导入代理软件。';
+  try {
+    if (!navigator.clipboard?.writeText) throw new Error('Clipboard unavailable');
+    await navigator.clipboard.writeText(current.url);
+    if (publication === current) publishStatus.textContent = copiedNote;
+    return;
+  } catch {
+    if (publication !== current) return;
+  }
+  publishedUrl.focus();
+  publishedUrl.select();
+  let copied = false;
+  try {
+    copied = document.execCommand('copy');
+  } catch {
+    copied = false;
+  }
+  publishStatus.textContent = copied
+    ? copiedNote
+    : '自动复制失败，链接已选中。请长按或使用 Ctrl+C 复制。';
+});
+
+revokePublished.addEventListener('click', async () => {
+  if (!publication || revoking) return;
+  const current = publication;
+  revoking = true;
+  publishButton.disabled = true;
+  copyPublished.disabled = true;
+  revokePublished.disabled = true;
+  revokePublished.setAttribute('aria-busy', 'true');
+  publishStatus.textContent = '正在撤销订阅链接…';
+  try {
+    // Revoke by the short token from the URL; the manage token stays in the header.
+    const shortToken = current.url.split('/').pop();
+    const response = await withTimeout(fetch(`/api/publish/${encodeURIComponent(shortToken)}`, {
+      method: 'DELETE',
+      headers: { 'X-Manage-Token': current.manageToken },
+    }), PUBLISH_TIMEOUT_MS);
+    if (publication !== current) return;
+    // 404/410 mean the link is already gone, which is the outcome the user wanted.
+    if (!response.ok && response.status !== 404 && response.status !== 410) {
+      const data = await readBody(response);
+      if (publication !== current) return;
+      publishStatus.textContent = publishErrorText(response.status, data?.message);
+      revoking = false;
+      revokePublished.removeAttribute('aria-busy');
+      copyPublished.disabled = false;
+      revokePublished.disabled = false;
+      updateExportState();
+      return;
+    }
+    resetPublication('订阅链接已撤销，该网址已失效。');
+    updateExportState();
+  } catch (error) {
+    if (publication !== current) return;
+    publishStatus.textContent = error?.name === 'TimeoutError'
+      ? '撤销请求超时，请稍后重试。'
+      : '撤销失败，请检查网络后重试。';
+    revoking = false;
+    revokePublished.removeAttribute('aria-busy');
+    copyPublished.disabled = false;
+    revokePublished.disabled = false;
+    updateExportState();
   }
 });
 

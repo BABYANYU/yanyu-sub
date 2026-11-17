@@ -31,6 +31,31 @@ test('wrangler.json and scripts/deployment.json describe the same deployment', (
   assert.equal(wrangler.observability?.enabled, false, 'request logging must stay off (no subscription URLs in logs)');
 });
 
+test('the CONFIGS KV namespace is bound identically in wrangler.json and scripts/deployment.json', () => {
+  const pick = (config) => config.kv_namespaces?.find((ns) => (ns.binding ?? ns.name) === 'CONFIGS');
+  const binding = pick(wrangler);
+  assert.ok(binding, 'wrangler.json must bind the CONFIGS namespace the hosted links read from');
+  assert.deepEqual(binding, pick(deployment), 'scripts/deployment.json must mirror the KV binding exactly');
+  assert.equal(binding.binding ?? binding.name, 'CONFIGS', 'the Worker reads env.CONFIGS');
+  assert.equal(binding.id, 'e7205f12788c4a2098c538a230f8f915');
+  assert.match(binding.id, /^[0-9a-f]{32}$/, 'Cloudflare namespace ids are 32 lowercase hex characters');
+  // Exactly one namespace: a second binding would silently split published links.
+  assert.equal(wrangler.kv_namespaces.length, 1);
+  assert.equal(deployment.kv_namespaces.length, 1);
+  // The one-time custom domain setting must still not leak back into wrangler.json.
+  assert.equal(wrangler.routes, undefined);
+});
+
+test('deployment configuration files carry no credentials', async () => {
+  for (const path of ['wrangler.json', 'scripts/deployment.json']) {
+    const text = await read(path);
+    assert.doesNotMatch(text, /(?:api[_-]?key|token|secret|password|bearer|authorization)\s*[:=]/i, `${path} must not hold credentials`);
+    assert.doesNotMatch(text, /\$\{\{|process\.env|CLOUDFLARE_/i, `${path} must not reference ambient secrets`);
+    // A KV namespace id is public; anything longer and opaque is a likely secret.
+    assert.doesNotMatch(text, /[A-Za-z0-9_+/=-]{40,}/, `${path} contains an opaque credential-like value`);
+  }
+});
+
 test('the deployed entry point is the file the build writes', () => {
   assert.equal(wrangler.main, 'dist/worker.js');
   assert.match(build, /outfile:'dist\/worker\.js'/);
@@ -172,6 +197,33 @@ test('deploy verification covers the served UI, assets and security headers', ()
   }
   assert.match(verify, /content-security-policy/);
   assert.match(verify, /x-content-type-options/);
+});
+
+test('verify-live.mjs probes a never-published hosted short link without publishing', () => {
+  // The probe must target the /s/<token> route with a token that was never stored,
+  // so acceptance never writes to the CONFIGS namespace (no real publication).
+  const probe = verify.match(/'\/s\/([A-Za-z0-9_-]+)'/);
+  assert.ok(probe, 'verify-live must probe the /s/<token> short link route');
+  assert.equal(probe[1].length, 8, 'hosted short links use 8-character tokens');
+  assert.match(probe[1], /^[A-Za-z0-9_-]{8}$/);
+  assert.equal(probe[1], 'AAAAAAAA', 'the probe token must be obviously unreal and unpublished');
+  assert.ok(/short\.status!==404/.test(verify) || /status!==404/.test(verify), 'the probe must require 404');
+  assert.match(verify, /content-type/, 'the probe must check the content type');
+  assert.match(verify, /text\/html/, 'an unknown short link must not fall through to the HTML shell');
+  assert.doesNotMatch(verify, /\/api\/publish/, 'verification must never create a publication');
+  assert.match(verify, /Hosted short link guard verified/);
+});
+
+test('documentation records the hosted short link contract', async () => {
+  const doc = await read('documentation/HOSTED-LINKS-2026-11-17.md');
+  assert.match(doc, /\/s\/Ab3dE9kZ/, 'the documented example must show the real short link shape');
+  assert.match(doc, /即凭据|视同密码|等同于密码/, 'the doc must state that the link itself is the credential');
+  assert.match(doc, /CONFIGS/);
+  assert.match(doc, /30 天/, 'the TTL ceiling is 30 days');
+  assert.match(doc, /管理令牌|管理令牌哈希/, 'management tokens are stored hashed only');
+  assert.match(doc, /节点密码/, 'readers must be warned the config contains node credentials');
+  assert.match(doc, /\/source\.tar\.gz/, 'the AGPL source archive stays downloadable');
+  assert.match(doc, /\/api\/publish/);
 });
 
 test('verify-live homepage probes exist in the shipped markup', async () => {

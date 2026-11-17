@@ -41,4 +41,16 @@ if(invalid.status!==422)throw Error('Invalid source URL must be rejected with 42
 const missing=await get('/api/unknown');
 if(missing.status!==404)throw Error('Unknown API must return 404');
 console.log('API guards verified');
+
+// Hosted short links: a syntactically valid token that was never published must
+// be a clean 404. This probes the lookup path without creating any publication.
+const short=await get('/s/AAAAAAAA');
+if(short.status!==404)throw Error('Unknown short link must return 404');
+const shortType=short.headers.get('content-type')||'';
+if(!shortType||shortType.includes('text/html'))throw Error('Unknown short link must not serve the HTML app shell (content-type: '+shortType+')');
+const shortBody=await short.text();
+if(/<!doctype html|<html/i.test(shortBody))throw Error('Unknown short link must not return an HTML page');
+const shortCache=(short.headers.get('cache-control')||'').toLowerCase();
+if(shortCache.includes('public'))throw Error('Unknown short link must not be publicly cacheable (cache-control: '+shortCache+')');
+console.log('Hosted short link guard verified');
 console.log('Deployment verification passed');

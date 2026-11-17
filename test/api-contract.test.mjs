@@ -280,3 +280,43 @@ test('rejected cross-origin calls do not consume the caller quota', async () => 
   assert.equal(result.status, 200);
 });
 
+
+// Short-link hosting shares the Worker with the converter, so its routes must be
+// matched before the static handler, answer in the same JSON error shape and never
+// echo the requested path. The KV binding is deliberately absent here: every route
+// has to fail closed with 503 instead of throwing.
+test('publish and short-link routes are routed ahead of the static handler', async () => {
+  const checks = [
+    [new Request(ORIGIN + '/api/publish'), 405, 'POST'],
+    [new Request(ORIGIN + '/api/publish', {method: 'PUT', headers: {Origin: origin}}), 405, 'POST'],
+    [new Request(ORIGIN + '/s/AbCd1234'), 503, null],
+    [new Request(ORIGIN + '/s/AbCd1234', {method: 'HEAD'}), 503, null],
+    [new Request(ORIGIN + '/s/AbCd1234', {method: 'POST', body: 'x'}), 405, 'GET, HEAD'],
+    [new Request(ORIGIN + '/api/publish/AbCd1234', {method: 'DELETE', headers: {Origin: origin}}), 503, null],
+  ];
+  for (const [request, status, allow] of checks) {
+    const response = await worker.fetch(request, {});
+    assert.equal(response.status, status, `${request.method} ${new URL(request.url).pathname}`);
+    assert.match(response.headers.get('content-type'), /application\/json/);
+    assert.equal(response.headers.get('x-content-type-options'), 'nosniff');
+    assert.match(response.headers.get('cache-control'), /no-store/);
+    if (allow) assert.equal(response.headers.get('allow'), allow);
+    assert.ok((await response.json()).message.length > 0);
+  }
+});
+
+test('short-link errors are generic and never reflect the requested path', async () => {
+  for (const path of ['/s/nope', '/s/..%2f..%2fsrc%2fworker.js', '/s/AbCd1234/extra', '/s/AbCd1234%20']) {
+    const response = await worker.fetch(new Request(ORIGIN + path), {});
+    assert.equal(response.status, 404, path);
+    const text = await response.text();
+    assert.deepEqual(Object.keys(JSON.parse(text)), ['message']);
+    assert.doesNotMatch(text, /worker\.js|nope|AbCd|\.\.|kv|CONFIGS/i, path);
+  }
+  // A malformed revoke path is a plain 404 too, never a stack trace or a KV detail.
+  const revoke = await worker.fetch(new Request(ORIGIN + '/api/publish/%2e%2e%2f%2e%2e', {
+    method: 'DELETE', headers: {Origin: origin, 'X-Manage-Token': 'a'.repeat(64), 'CF-Connecting-IP': '203.0.113.240'},
+  }), {});
+  assert.equal(revoke.status, 404);
+  assert.doesNotMatch(await revoke.text(), /worker\.js|\.\.|kv|CONFIGS/i);
+});
