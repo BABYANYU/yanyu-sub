@@ -77,7 +77,7 @@ function normalize(p,i){
  }
  if(n.type==='tuic'&&n.token&&(n.uuid||n.password))bad('TUIC v4 与 v5 认证字段不能混合');
  // The generated profile contains exactly one select group, so cross-node references cannot survive.
- if(n['dialer-proxy'])bad(`第 ${i+1} 个节点依赖其他策略，当前单组模板无法保留该引用`);
+ if(n['dialer-proxy']||n['underlying-proxy'])bad(`第 ${i+1} 个节点依赖其他策略，当前单组模板无法保留该引用`);
  return n;
 }
 function surgeGuard(n){
@@ -100,6 +100,31 @@ function surgeGuard(n){
  }
  walk(n,'');
 }
+// Parameters that decide whether the connection is verified and whom it talks to.
+const CRITICAL_FIELDS=['skip-cert-verify','tls','sni','servername','server','port','password','uuid','token','encrypt-method','username','underlying-proxy','interface','block-quic','obfs','obfs-password'];
+// Re-read the produced line and refuse any option the source did not ask for.
+function verifySurgeLine(node,line){
+ let parsed;
+ try{parsed=lastParse(PARSERS.find(p=>p.test(line)).parse(line))}catch{bad(`节点“${node.name}”的输出无法被解析，已停止导出`)}
+ const before=key=>key.startsWith('reality-')?node['reality-opts']?.[key.slice(8)]:node[key];
+ for(const key of CRITICAL_FIELDS){
+  const a=before(key),b=parsed[key];
+  if(a===undefined&&b===undefined)continue;
+  if(String(a??'')!==String(b??''))bad(`节点“${node.name}”的 ${key} 在输出中发生异常变化`);
+ }
+ if(parsed['skip-cert-verify']===true&&node['skip-cert-verify']!==true)bad(`节点“${node.name}”的输出被注入了证书校验开关`);
+}
+// A quoted value must end the parameter: anything but a comma after the closing quote is malformed.
+function checkQuoting(line,name){
+ for(let p=0;p<line.length;p++){
+  if(line[p]!=='"')continue;
+  const close=line.indexOf('"',p+1);
+  if(close<0)bad(`节点“${name}”的输出引号未闭合`);
+  const next=line[close+1];
+  if(next!==undefined&&next!==','&&!/\s/u.test(next))bad(`节点“${name}”的输出引号结构异常`);
+  p=close;
+ }
+}
 export function convertTexts({target,sources}){
  if(!['Surge','Mihomo'].includes(target))bad('仅支持 Surge 或 Mihomo');
  if(!Array.isArray(sources)||!sources.length||sources.length>4)bad('请填写 1–4 个订阅来源');
@@ -112,7 +137,7 @@ export function convertTexts({target,sources}){
   if(!Array.isArray(result)||result.length!==nodes.length)bad('存在 Mihomo 不支持的节点，已停止导出，未静默删除节点');
   content=stringify({'mixed-port':7890,'allow-lan':false,mode:'rule','log-level':'info',ipv6:false,dns:{enable:true,nameserver:['223.5.5.5']},proxies:result,'proxy-groups':[{name:'Proxy',type:'select',proxies:result.map(n=>n.name)}],rules:['GEOIP,cn,DIRECT','MATCH,Proxy']},{lineWidth:0});
  }else{
-  const prod=SurgeProducer();const lines=nodes.map(n=>{surgeGuard(n);try{const line=prod.produce(structuredClone(n),'text',{});if(!line||/[\r\n]/.test(line))bad('节点输出无效');return line}catch{bad(`节点“${n.name}”有 Surge 不支持的协议或参数，请检查来源`)}});
+  const prod=SurgeProducer();const lines=nodes.map(n=>{surgeGuard(n);let line;try{line=prod.produce(structuredClone(n),'text',{})}catch{bad(`节点“${n.name}”有 Surge 不支持的协议或参数，请检查来源`)}if(!line||/[\r\n]/.test(line))bad('节点输出无效');checkQuoting(line,n.name);verifySurgeLine(n,line);return line});
   content=['[General]','dns-server = 223.5.5.5','ipv6 = false','','[Proxy]',...lines,'','[Proxy Group]',`Proxy = select, ${nodes.map(n=>n.name).join(', ')}`,'','[Rule]','GEOIP,CN,DIRECT','FINAL,Proxy',''].join('\n');
  }
  if(new TextEncoder().encode(content).length>4*MAX_BYTES)bad('生成配置过大');

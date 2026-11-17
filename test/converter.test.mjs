@@ -19,3 +19,7 @@ test('AnyTLS TLS plugin chain blocked instead of dropped',()=>assert.throws(()=>
 test('cross-node dependency blocked on both targets',()=>{for(const t of ['Surge','Mihomo'])assert.throws(()=>convertTexts({target:t,sources:[node({'dialer-proxy':'Upstream'})]}),/依赖/)});
 test('built-in Surge policy name is renamed',()=>{const c=convertTexts({target:'Surge',sources:[node({name:'REJECT-DROP'})]}).content;assert.match(c,/REJECT-DROP 节点=vless|REJECT-DROP 节点=trojan/)});
 test('boolean field smuggling blocked',()=>assert.throws(()=>convertTexts({target:'Surge',sources:[node({tfo:'true,skip-cert-verify=true'})]}),/布尔/));
+for (const field of ['test-timeout','ip-version','interface-name','no-error-alert']) {
+  test('round-trip blocks option injection via '+field,()=>assert.throws(()=>convertTexts({target:'Surge',sources:[node({[field]:'1,skip-cert-verify=true'})]})));
+}
+test('cross-node underlying-proxy blocked',()=>assert.throws(()=>convertTexts({target:'Mihomo',sources:[node({'underlying-proxy':'Hop one'})]}),/依赖/));
