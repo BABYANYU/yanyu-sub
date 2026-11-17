@@ -173,3 +173,11 @@ test('deploy verification covers the served UI, assets and security headers', ()
   assert.match(verify, /content-security-policy/);
   assert.match(verify, /x-content-type-options/);
 });
+
+test('verify-live homepage probes exist in the shipped markup', async () => {
+  const page = (await import('node:fs/promises')).readFile;
+  const markup = await page(new URL('../public/index.html', import.meta.url), 'utf8');
+  const probes = [...verify.matchAll(/html\.includes\('([^']+)'\)/g)].map((m) => m[1]);
+  assert.ok(probes.length > 0, 'verify-live must probe the homepage');
+  for (const probe of probes) assert.ok(markup.includes(probe), `verify-live probes ${probe}, missing from index.html`);
+});

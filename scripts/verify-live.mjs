@@ -16,7 +16,7 @@ console.log('Live revision verified: '+expected);
 const home=await get('/');
 if(home.status!==200||!home.headers.get('content-type')?.includes('text/html'))throw Error('Homepage unavailable');
 const html=await home.text();
-if(!html.includes('id="convert-form"')||!html.includes('id="source-template"'))throw Error('Homepage markup missing converter contract');
+if(!html.includes('id="convert-form"')||!html.includes('id="source-input"'))throw Error('Homepage markup missing converter contract');
 const csp=home.headers.get('content-security-policy')||'';
 for(const rule of ["default-src 'self'","script-src 'self'","frame-ancestors 'none'","base-uri 'none'"])if(!csp.includes(rule))throw Error('CSP missing: '+rule);
 if(home.headers.get('x-content-type-options')!=='nosniff')throw Error('Missing nosniff');
