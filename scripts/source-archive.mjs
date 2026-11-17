@@ -1,7 +1,7 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import {gzipSync}from'node:zlib';
-const selected=['.gitignore','.github','LICENSE','NOTICE.md','README.md','CHANGELOG.md','docs','package.json','package-lock.json','wrangler.json','src','scripts','test','vendor','public/index.html','public/app.js','public/style.css'];
+const selected=['.gitignore','.github','LICENSE','NOTICE.md','README.md','CHANGELOG.md','documentation','package.json','package-lock.json','wrangler.json','src','scripts','test','vendor','public/index.html','public/app.js','public/style.css'];
 const excluded=new Set(['src/assets.generated.js','src/build-info.generated.js','scripts/deploy-browser.cjs','scripts/browser-test.cjs']);
 const files=[];
 async function walk(p){let stat;try{stat=await fs.lstat(p)}catch(e){if(e.code==='ENOENT')return;throw e}if(stat.isSymbolicLink())throw Error('Source archive does not include symlinks');if(stat.isDirectory()){for(const n of(await fs.readdir(p)).sort())await walk(p+'/'+n)}else if(!excluded.has(p))files.push(p)}
