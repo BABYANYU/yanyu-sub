@@ -9,7 +9,7 @@ const vendor=path.resolve('vendor/sub-store');
 const alias={name:'isolated-vendor',setup(b){b.onResolve({filter:/^@\//},a=>{let p=a.path==='@/core/app'?path.resolve('src/app-shim.js'):path.join(vendor,a.path.slice(2)); if(!p.endsWith('.js'))p=existsSync(p+'.js')?p+'.js':path.join(p,'index.js'); return {path:p};});}};
 await build({entryPoints:['src/converter.js'],bundle:true,format:'esm',platform:'browser',outfile:'public/converter.js',minify:true,target:'es2022',plugins:[alias],logLevel:'warning'});
 const assets={};
-for(const name of ['index.html','app.js','style.css','converter.js'])assets['/'+name]={body:await fs.readFile('public/'+name,'utf8'),type:name.endsWith('.html')?'text/html; charset=utf-8':name.endsWith('.css')?'text/css; charset=utf-8':'application/javascript; charset=utf-8'};
+for(const name of ['index.html','app.js','style.css','converter.js','theme.js'])assets['/'+name]={body:await fs.readFile('public/'+name,'utf8'),type:name.endsWith('.html')?'text/html; charset=utf-8':name.endsWith('.css')?'text/css; charset=utf-8':'application/javascript; charset=utf-8'};
 if(existsSync('public/source.tar.gz'))assets['/source.tar.gz']={body:(await fs.readFile('public/source.tar.gz')).toString('base64'),type:'application/gzip',base64:true};
 await fs.writeFile('src/assets.generated.js','export default '+JSON.stringify(assets)+';');
 await build({entryPoints:['src/worker.js'],bundle:true,format:'esm',platform:'browser',outfile:'dist/worker.js',minify:true,target:'es2022',logLevel:'warning'});

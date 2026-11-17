@@ -349,3 +349,16 @@ test('the page fits a 375px viewport without horizontal overflow', () => {
   assert.deepEqual(wide, [], 'no fixed width may exceed the 375px content box');
   assert.match(css, /@media \(max-width: 560px\)[\s\S]*\.shell \{ padding: 0 20px; \}/);
 });
+test('day/night theme toggle and palette are wired without inline script', async () => {
+  assert.match(html, /<script src="\.\/theme\.js"><\/script>/, 'theme script must load before paint');
+  assert.match(html, /id="theme-toggle"/);
+  assert.match(html, /id="theme-label"/);
+  assert.match(css, /:root\[data-theme="dark"\]/, 'dark palette must be selectable');
+  assert.match(css, /:root\[data-theme="light"\]/);
+  assert.match(css, /\.theme-toggle\s*\{/);
+  const theme = await (await import('node:fs/promises')).readFile(new URL('../public/theme.js', import.meta.url), 'utf8');
+  for (const token of ["'auto'", "'light'", "'dark'", 'localStorage', "document.documentElement.dataset.theme", 'theme-toggle']) {
+    assert.ok(theme.includes(token), `theme.js should handle ${token}`);
+  }
+  assert.doesNotMatch(theme, /<script|innerHTML/, 'theme.js must stay a plain external script');
+});

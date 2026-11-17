@@ -62,7 +62,7 @@ test('health exposes no env, secret or storage binding', async () => {
 
 test('static assets are served byte-identical with the hardened header set', async () => {
   for (const [path, file] of [['/', 'index.html'], ['/index.html', 'index.html'], ['/app.js', 'app.js'],
-    ['/style.css', 'style.css'], ['/converter.js', 'converter.js']]) {
+    ['/style.css', 'style.css'], ['/converter.js', 'converter.js'], ['/theme.js', 'theme.js']]) {
     const response = await worker.fetch(new Request(ORIGIN + path), {});
     assert.equal(response.status, 200, path);
     assert.equal(await response.text(), await fs.readFile('public/' + file, 'utf8'), path);
