@@ -4,10 +4,11 @@ import {validateResolvedSource} from './source-policy.js';
 const LIMIT=1024*1024;
 const secure={'Cache-Control':'private, no-store','X-Content-Type-Options':'nosniff','Referrer-Policy':'no-referrer','X-Frame-Options':'DENY','Permissions-Policy':'camera=(), microphone=(), geolocation=()'};
 const rate=new Map();
+let lastPrune=0;
 function json(body,status=200){return Response.json(body,{status,headers:secure});}
-function limited(host){const now=Date.now();const x=rate.get(host)||{start:now,n:0};if(now-x.start>=60000){x.start=now;x.n=0}x.n++;rate.set(host,x);return x.n<=10}
-function prune(){const now=Date.now();for(const [host,x]of rate)if(now-x.start>60000)rate.delete(host)}
-setInterval(prune,60000).unref?.();
+// Cloudflare rejects timers and I/O in the global scope, so prune lazily per request.
+function prune(now){for(const [host,x]of rate)if(now-x.start>60000)rate.delete(host);lastPrune=now}
+function limited(host){const now=Date.now();if(now-lastPrune>60000)prune(now);const x=rate.get(host)||{start:now,n:0};if(now-x.start>=60000){x.start=now;x.n=0}x.n++;rate.set(host,x);return x.n<=10}
 export function validateSource(value,ownHost){
  if(typeof value!=='string'||value.length>8192||/[\u0000-\u0020\\]/u.test(value))throw Error('URL');
  const u=new URL(value);
