@@ -5,35 +5,28 @@ const form = $('#convert-form');
 const sourceInput = $('#source-input');
 const resultPanel = $('#result');
 const errorPanel = $('#error-panel');
-const status = $('#status');
-const generate = $('#generate');
-const download = $('#download');
-const copy = $('#copy');
-const acceptPartial = $('#accept-partial');
 const publishButton = $('#publish');
-const publishTtl = $('#publish-ttl');
 const publishStatus = $('#publish-status');
 const publishedBlock = $('#published');
 const publishedUrl = $('#published-url');
-const publishedExpiry = $('#published-expiry');
 const copyPublished = $('#copy-published');
 const revokePublished = $('#revoke-published');
+const configPreview = $('#config-preview');
 // Same envelope the converter and the Worker enforce; checked before any request.
 const MAX_URL_LENGTH = 8192;
 const CONVERT_TIMEOUT_MS = 90000;
 const PUBLISH_TIMEOUT_MS = 30000;
-// POST /api/publish accepts a TTL in seconds; the <select> offers exactly these.
-const PUBLISH_TTLS = new Map([['86400', '1 天'], ['604800', '7 天'], ['2592000', '30 天']]);
+// Hosted links are permanent: the client never asks for a shorter lifetime.
+const PUBLISH_DONE = '订阅链接已生成，默认永久有效。';
 // Exact test used by convertSources() in converter.js to treat a source as a link.
 const URL_INPUT = /^https?:\/\/[^\s]+$/;
 const URL_LINE = /^https?:\/\/\S+$/i;
 let revision = 0;
 let running = false;
 let result = null;
-// Live publication for the current result: {url, manageToken, expiresAt, ttlSeconds}.
+// Live publication for the current result: {url, manageToken}.
 // The manage token is deliberately memory-only — never a cookie, never storage.
 let publication = null;
-let publishing = false;
 let revoking = false;
 
 class TimeoutError extends Error {
@@ -43,39 +36,26 @@ class TimeoutError extends Error {
   }
 }
 
+// The single submit button covers both stages (convert, then publish), so it is
+// disabled for the whole run and re-armed afterwards.
+function setRunning(value) {
+  running = value;
+  publishButton.disabled = value;
+  if (value) publishButton.setAttribute('aria-busy', 'true');
+  else publishButton.removeAttribute('aria-busy');
+}
+
 // Forget the hosted link locally. The manage token must never outlive the result it
 // belongs to, and it is never persisted to any browser storage or a cookie.
 function resetPublication(message = '') {
   publication = null;
-  publishing = false;
   revoking = false;
   publishedBlock.hidden = true;
   publishedUrl.value = '';
-  publishedExpiry.textContent = '';
   copyPublished.disabled = true;
   revokePublished.disabled = true;
   revokePublished.removeAttribute('aria-busy');
-  publishButton.removeAttribute('aria-busy');
-  publishButton.textContent = '生成订阅链接';
   publishStatus.textContent = message;
-}
-
-// expiresAt may arrive as ISO-8601, epoch seconds or epoch milliseconds. The UI only
-// shows a short label, so anything unusable falls back to the TTL that was requested.
-function publishedExpiryDate(value, ttlSeconds) {
-  const candidate = typeof value === 'number'
-    ? new Date(value < 1e12 ? value * 1000 : value)
-    : typeof value === 'string' && value.trim() ? new Date(value) : null;
-  if (candidate && Number.isFinite(candidate.getTime())) return candidate;
-  return new Date(Date.now() + ttlSeconds * 1000);
-}
-
-function expiryLabel(date) {
-  const remaining = date.getTime() - Date.now();
-  if (remaining <= 0) return '链接已过期';
-  const days = Math.round(remaining / 86400000);
-  if (days >= 1) return `${days} 天后失效`;
-  return `${Math.max(1, Math.round(remaining / 3600000))} 小时后失效`;
 }
 
 // The publish API answers JSON on success and may answer plain text on error, so both
@@ -111,11 +91,10 @@ function invalidate() {
   result = null;
   resetPublication();
   resultPanel.hidden = true;
-  $('#config-preview').value = '';
+  configPreview.value = '';
   errorPanel.hidden = true;
-  updateExportState();
-  if (hadResult || running) status.textContent = '内容已更改，请重新生成。';
-  else status.textContent = '';
+  if (hadResult || running) publishStatus.textContent = '内容已更改，请重新生成。';
+  else publishStatus.textContent = '';
 }
 
 // Keep credentials and source addresses out of visible diagnostic text.
@@ -167,39 +146,19 @@ function checkSource(text) {
   return null;
 }
 
-function warningText(warning) {
-  if (typeof warning === 'string') return cleanDiagnostic(warning);
-  if (warning && typeof warning === 'object') {
-    const node = warning.nodeName || warning.name;
-    const reason = warning.message || warning.reason || warning.description;
-    const source = Number.isInteger(warning.sourceIndex) ? `订阅 ${warning.sourceIndex + 1}` : '';
-    const parts = [source, node, reason].filter((part) => typeof part === 'string' && part.trim());
-    if (parts.length) return cleanDiagnostic(parts.join(' · '));
-  }
-  return '有内容未完整转换，请检查原始订阅。';
-}
 
+// Failures stay inline: the alert panel for input problems, the status line for
+// anything that happens after the profile was already converted.
 function showError(message, input = null) {
   $('#error-message').textContent = message;
   errorPanel.hidden = false;
-  status.textContent = '';
+  publishStatus.textContent = '';
   if (input) input.setAttribute('aria-invalid', 'true');
   // Focusing the offending field lets the user fix it immediately; without one,
   // move to the alert so the message is announced and reachable.
   if (input) input.focus();
   else errorPanel.focus();
 }
-
-function updateExportState() {
-  const enabled = Boolean(result) && (!result.hasWarnings || acceptPartial.checked);
-  download.disabled = !enabled;
-  copy.disabled = !enabled;
-  // Publishing is the third export path, so it follows the same "partial" gate.
-  publishButton.disabled = !enabled || publishing || revoking;
-}
-
-// Credentials live in the generated profile: say so on every export path.
-const CREDENTIAL_NOTE = '配置包含节点凭据，请勿公开分享。';
 
 function withTimeout(promise, ms) {
   let timer;
@@ -209,21 +168,61 @@ function withTimeout(promise, ms) {
   return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
 }
 
+// POST the converted profile and adopt the hosted link. Resolves true on success.
+async function publishLink(current, requestRevision) {
+  try {
+    const response = await withTimeout(fetch('/api/publish', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ content: current.content, target: current.target }),
+    }), PUBLISH_TIMEOUT_MS);
+    if (requestRevision !== revision) return false;
+    const data = await readBody(response);
+    if (requestRevision !== revision) return false;
+    if (!response.ok) {
+      publishStatus.textContent = publishErrorText(response.status, data?.message);
+      return false;
+    }
+    const url = typeof data?.url === 'string' ? data.url.trim() : '';
+    const manageToken = typeof data?.manageToken === 'string' ? data.manageToken.trim() : '';
+    if (!/^https?:\/\/\S+$/i.test(url) || !manageToken || manageToken.length > 512) {
+      publishStatus.textContent = '生成订阅链接失败，请稍后重试。';
+      return false;
+    }
+    publication = { url, manageToken };
+    publishedUrl.value = url;
+    publishedBlock.hidden = false;
+    copyPublished.disabled = false;
+    revokePublished.disabled = false;
+    resultPanel.hidden = false;
+    publishStatus.textContent = current.hasWarnings
+      ? `${PUBLISH_DONE}另有 ${current.warningCount} 项内容未完整转换，请检查原始订阅。`
+      : PUBLISH_DONE;
+    resultPanel.focus();
+    return true;
+  } catch (error) {
+    if (requestRevision !== revision) return false;
+    publishStatus.textContent = error?.name === 'TimeoutError'
+      ? `生成订阅链接超过 ${Math.round(PUBLISH_TIMEOUT_MS / 1000)} 秒未完成，请检查网络后重试。`
+      : '生成订阅链接失败，请检查网络后重试。';
+    return false;
+  }
+}
+
 sourceInput.addEventListener('input', () => {
   sourceInput.removeAttribute('aria-invalid');
   invalidate();
 });
 
 form.querySelectorAll('input[name="target"]').forEach((input) => input.addEventListener('change', invalidate));
-acceptPartial.addEventListener('change', updateExportState);
 
 form.addEventListener('submit', async (event) => {
   event.preventDefault();
-  if (running) return;
+  if (running || revoking) return;
   sourceInput.removeAttribute('aria-invalid');
   const text = sourceInput.value.trim();
   // Validate before touching the current result so a fixable input error does not
-  // discard what the user already generated.
+  // discard the link the user already generated.
   const problem = checkSource(text);
   if (problem) {
     showError(problem, sourceInput);
@@ -237,11 +236,8 @@ form.addEventListener('submit', async (event) => {
   }
   invalidate();
   const requestRevision = revision;
-  running = true;
-  generate.disabled = true;
-  $('#generate-label').textContent = '正在生成…';
-  generate.setAttribute('aria-busy', 'true');
-  status.textContent = '正在读取并转换订阅，请稍候…';
+  setRunning(true);
+  publishStatus.textContent = '正在生成配置…';
   try {
     const converted = await withTimeout(convertSources({ target, sources: [text] }), CONVERT_TIMEOUT_MS);
     if (requestRevision !== revision) return;
@@ -250,25 +246,17 @@ form.addEventListener('submit', async (event) => {
       return;
     }
     const warnings = Array.isArray(converted.warnings) ? converted.warnings : [];
-    result = { content: converted.content, count: converted.count, target, hasWarnings: warnings.length > 0 };
-    $('#result-title').textContent = warnings.length ? '部分配置已生成' : '配置已生成';
-    $('#result-badge').textContent = warnings.length ? '请检查问题' : '已就绪';
-    $('#result-summary').textContent = `${target} · ${converted.count} 个可用节点${warnings.length ? ` · ${warnings.length} 项转换问题` : ' · 可下载或复制'}`;
-    $('#config-preview').value = converted.content;
-    $('#warning-panel').hidden = warnings.length === 0;
-    const list = $('#warning-list');
-    list.replaceChildren();
-    warnings.forEach((warning) => {
-      const item = document.createElement('li');
-      item.textContent = warningText(warning);
-      list.append(item);
-    });
-    acceptPartial.checked = false;
-    $('#accept-label').textContent = `我已查看问题，仅导出 ${converted.count} 个可用节点`;
-    updateExportState();
-    resultPanel.hidden = false;
-    status.textContent = warnings.length ? '生成结果存在转换问题，请查看问题清单。' : `已生成 ${converted.count} 个节点的 ${target} 配置。`;
-    resultPanel.focus();
+    result = {
+      content: converted.content,
+      count: converted.count,
+      target,
+      hasWarnings: warnings.length > 0,
+      warningCount: warnings.length,
+    };
+    configPreview.value = converted.content;
+    // Conversion succeeded: hand the profile straight to the short-link service.
+    publishStatus.textContent = '正在生成订阅链接…';
+    await publishLink(result, requestRevision);
   } catch (error) {
     if (error?.name === 'TimeoutError') {
       // The request keeps running in the background; drop whatever it returns.
@@ -280,64 +268,9 @@ form.addEventListener('submit', async (event) => {
     const known = error?.constructor?.name === 'ConversionError' || error?.name === 'ConversionError';
     showError(known ? cleanDiagnostic(error.message) : '订阅读取或转换失败。请检查链接、订阅内容与所选格式，然后重试。');
   } finally {
-    running = false;
-    generate.disabled = false;
-    generate.removeAttribute('aria-busy');
-    $('#generate-label').textContent = '生成配置';
-  }
-});
-
-publishButton.addEventListener('click', async () => {
-  if (!result || publishing || revoking || publishButton.disabled) return;
-  const ttlSeconds = PUBLISH_TTLS.has(publishTtl.value) ? Number(publishTtl.value) : 604800;
-  const current = result;
-  const requestRevision = revision;
-  // A new link supersedes the old one: drop the previous URL and token first.
-  resetPublication();
-  publishing = true;
-  publishButton.disabled = true;
-  publishButton.setAttribute('aria-busy', 'true');
-  publishButton.textContent = '生成中…';
-  publishStatus.textContent = '正在生成订阅链接…';
-  try {
-    const response = await withTimeout(fetch('/api/publish', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ content: current.content, target: current.target, ttlSeconds }),
-    }), PUBLISH_TIMEOUT_MS);
-    if (requestRevision !== revision) return;
-    const data = await readBody(response);
-    if (requestRevision !== revision) return;
-    if (!response.ok) {
-      publishStatus.textContent = publishErrorText(response.status, data?.message);
-      return;
-    }
-    const url = typeof data?.url === 'string' ? data.url.trim() : '';
-    const manageToken = typeof data?.manageToken === 'string' ? data.manageToken.trim() : '';
-    if (!/^https?:\/\/\S+$/i.test(url) || !manageToken || manageToken.length > 512) {
-      publishStatus.textContent = '生成订阅链接失败，请稍后重试。';
-      return;
-    }
-    publication = { url, manageToken, expiresAt: publishedExpiryDate(data?.expiresAt, ttlSeconds) };
-    publishedUrl.value = url;
-    publishedExpiry.textContent = expiryLabel(publication.expiresAt);
-    publishedBlock.hidden = false;
-    copyPublished.disabled = false;
-    revokePublished.disabled = false;
-    publishStatus.textContent = `已生成订阅链接（有效期 ${PUBLISH_TTLS.get(String(ttlSeconds))}），可直接导入代理软件。`;
-    publishButton.textContent = '重新生成';
-  } catch (error) {
-    if (requestRevision !== revision) return;
-    publishStatus.textContent = error?.name === 'TimeoutError'
-      ? `生成订阅链接超过 ${Math.round(PUBLISH_TIMEOUT_MS / 1000)} 秒未完成，请检查网络后重试。`
-      : '生成订阅链接失败，请检查网络后重试。';
-  } finally {
-    if (requestRevision === revision) {
-      publishing = false;
-      publishButton.removeAttribute('aria-busy');
-      if (!publication) publishButton.textContent = '生成订阅链接';
-      updateExportState();
-    }
+    // Always re-arm the single button: a newer keystroke only bumps `revision`,
+    // it must not leave the entry point disabled.
+    setRunning(false);
   }
 });
 
@@ -367,14 +300,14 @@ copyPublished.addEventListener('click', async () => {
 });
 
 revokePublished.addEventListener('click', async () => {
-  if (!publication || revoking) return;
+  if (!publication || revoking || running) return;
   const current = publication;
   revoking = true;
   publishButton.disabled = true;
   copyPublished.disabled = true;
   revokePublished.disabled = true;
   revokePublished.setAttribute('aria-busy', 'true');
-  publishStatus.textContent = '正在撤销订阅链接…';
+  publishStatus.textContent = '正在撤销链接…';
   try {
     // Revoke by the short token from the URL; the manage token stays in the header.
     const shortToken = current.url.split('/').pop();
@@ -388,72 +321,22 @@ revokePublished.addEventListener('click', async () => {
       const data = await readBody(response);
       if (publication !== current) return;
       publishStatus.textContent = publishErrorText(response.status, data?.message);
-      revoking = false;
-      revokePublished.removeAttribute('aria-busy');
-      copyPublished.disabled = false;
-      revokePublished.disabled = false;
-      updateExportState();
       return;
     }
     resetPublication('订阅链接已撤销，该网址已失效。');
-    updateExportState();
   } catch (error) {
     if (publication !== current) return;
     publishStatus.textContent = error?.name === 'TimeoutError'
       ? '撤销请求超时，请稍后重试。'
       : '撤销失败，请检查网络后重试。';
-    revoking = false;
-    revokePublished.removeAttribute('aria-busy');
-    copyPublished.disabled = false;
-    revokePublished.disabled = false;
-    updateExportState();
-  }
-});
-
-download.addEventListener('click', () => {
-  if (!result || download.disabled) return;
-  const extension = result.target === 'Surge' ? 'conf' : 'yaml';
-  const blob = new Blob([result.content], { type: 'text/plain;charset=utf-8' });
-  const url = URL.createObjectURL(blob);
-  const anchor = document.createElement('a');
-  anchor.href = url;
-  anchor.download = `yanyu-${result.target.toLowerCase()}${result.hasWarnings ? '-partial' : ''}.${extension}`;
-  document.body.append(anchor);
-  anchor.click();
-  anchor.remove();
-  setTimeout(() => URL.revokeObjectURL(url), 30000);
-  status.textContent = result.hasWarnings
-    ? `已发起部分配置下载，请保留上方问题清单。${CREDENTIAL_NOTE}`
-    : `已发起下载，请在浏览器下载列表中查看。${CREDENTIAL_NOTE}`;
-});
-
-copy.addEventListener('click', async () => {
-  if (!result || copy.disabled) return;
-  const current = result;
-  const done = current.hasWarnings
-    ? `已复制可用节点配置，请保留上方问题清单。${CREDENTIAL_NOTE}`
-    : `配置已复制。${CREDENTIAL_NOTE}`;
-  try {
-    if (!navigator.clipboard?.writeText) throw new Error('Clipboard unavailable');
-    await navigator.clipboard.writeText(current.content);
-    if (result === current) status.textContent = done;
-  } catch {
-    if (result !== current) return;
-    $('.preview').open = true;
-    const preview = $('#config-preview');
-    preview.focus();
-    preview.select();
-    let copied = false;
-    try {
-      copied = document.execCommand('copy');
-    } catch {
-      copied = false;
+  } finally {
+    if (publication === current) {
+      revoking = false;
+      revokePublished.removeAttribute('aria-busy');
+      copyPublished.disabled = false;
+      revokePublished.disabled = false;
+      publishButton.disabled = running;
     }
-    if (copied) {
-      status.textContent = done;
-      return;
-    }
-    status.textContent = `自动复制失败，已选中配置。请长按或使用 Ctrl+C 复制，也可下载配置。${CREDENTIAL_NOTE}`;
   }
 });
 
@@ -462,4 +345,3 @@ if (/iPhone|iPad|iPod/i.test(navigator.userAgent)) {
 } else if (/Windows/i.test(navigator.userAgent)) {
   form.querySelector('input[value="Mihomo"]').checked = true;
 }
-updateExportState();

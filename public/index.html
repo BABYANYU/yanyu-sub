@@ -6,7 +6,7 @@
   <meta name="theme-color" content="#f5f5f3">
   <meta name="color-scheme" content="light dark">
   <title>订阅转换 · Yanyu Sub</title>
-  <meta name="description" content="合并订阅，转换为 Surge 或 Mihomo 配置。">
+  <meta name="description" content="合并订阅，转换为 Surge 或 Mihomo 配置并生成永久订阅链接。">
   <link rel="stylesheet" href="./style.css">
   <script type="module" src="./app.js"></script>
 </head>
@@ -33,31 +33,18 @@
             <label class="target-option"><input type="radio" name="target" value="Surge" checked><span class="target-description"><strong>Surge</strong></span><span class="radio-indicator" aria-hidden="true"></span></label>
             <label class="target-option"><input type="radio" name="target" value="Mihomo"><span class="target-description"><strong>Mihomo</strong></span><span class="radio-indicator" aria-hidden="true"></span></label>
           </fieldset>
-          <button id="generate" class="button button-primary" type="submit"><span id="generate-label">生成配置</span><span class="button-arrow" aria-hidden="true">→</span></button>
+          <button id="publish" class="button button-primary" type="submit">生成订阅链接</button>
         </section>
       </form>
-      <div id="status" class="status" role="status" aria-live="polite" aria-atomic="true"></div>
+      <div id="publish-status" class="publish-status" role="status" aria-live="polite" aria-atomic="true"></div>
       <section id="error-panel" class="notice notice-error" role="alert" tabindex="-1" hidden><h2>请检查订阅</h2><p id="error-message"></p></section>
       <section id="result" class="result" aria-labelledby="result-title" tabindex="-1" hidden>
-        <div class="group-head result-head"><h2 id="result-title">配置已生成</h2><span id="result-badge" class="badge">已就绪</span></div>
-        <p id="result-summary" class="result-summary"></p>
-        <div id="warning-panel" class="notice notice-warning" hidden><h3>有节点需要检查</h3><p>以下内容未完整转换，请检查后再导出可用节点。</p><ul id="warning-list"></ul><label class="acknowledge"><input id="accept-partial" type="checkbox"><span id="accept-label">我已查看问题，仅导出可用节点</span></label></div>
-        <div class="result-actions"><button id="download" class="button button-quiet" type="button">下载配置</button><button id="copy" class="button button-quiet" type="button">复制配置</button></div>
-        <div class="publish" aria-labelledby="publish-title">
-          <h3 id="publish-title">订阅链接</h3>
-          <p class="publish-help">生成一个短链接，可直接导入 Surge 或 Mihomo。</p>
-          <div class="publish-controls">
-            <label class="publish-ttl" for="publish-ttl"><span class="sr-only">订阅链接有效期</span><select id="publish-ttl" name="publish-ttl"><option value="86400">1 天</option><option value="604800" selected>7 天</option><option value="2592000">30 天</option></select></label>
-            <button id="publish" class="button button-primary" type="button">生成订阅链接</button>
-          </div>
-          <div id="publish-status" class="publish-status" role="status" aria-live="polite" aria-atomic="true"></div>
-          <div id="published" class="published" hidden>
-            <label class="sr-only" for="published-url">订阅链接</label>
-            <input id="published-url" class="published-url" type="text" readonly autocapitalize="off" autocomplete="off" autocorrect="off" spellcheck="false">
-            <div class="published-actions"><button id="copy-published" class="button button-quiet" type="button">复制链接</button><button id="revoke-published" class="button button-quiet" type="button">撤销链接</button></div>
-            <p class="publish-note">链接等同于密码，请勿公开分享。</p>
-            <p class="publish-expiry" id="published-expiry"></p>
-          </div>
+        <div class="group-head result-head"><h2 id="result-title">订阅链接</h2></div>
+        <div id="published" class="published" hidden>
+          <label class="sr-only" for="published-url">订阅链接</label>
+          <input id="published-url" class="published-url" type="text" readonly autocapitalize="off" autocomplete="off" autocorrect="off" spellcheck="false">
+          <div class="published-actions"><button id="copy-published" class="button button-quiet" type="button">复制链接</button><button id="revoke-published" class="button button-quiet" type="button">撤销链接</button></div>
+          <p class="publish-note">链接等同于密码，请勿公开分享。</p>
         </div>
         <details class="preview"><summary>查看配置</summary><label class="sr-only" for="config-preview">生成的配置内容</label><textarea id="config-preview" readonly spellcheck="false" wrap="off"></textarea></details>
       </section>

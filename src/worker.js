@@ -16,7 +16,9 @@ const PUBLISH_MAX=2*1024*1024;
 const PUBLISH_WINDOW=10*60*1000;
 const PUBLISH_QUOTA=5;
 const PUBLISH_ATTEMPTS=5;
-const DEFAULT_TTL=604800;
+// Short links are permanent unless the caller explicitly asks for a TTL; the legacy
+// values stay accepted so an older UI (or a script) that still sends ttlSeconds keeps
+// working, but omitting the field means "never expires" and skips expirationTtl.
 const TTLS=new Set([3600,86400,604800,2592000]);
 const TARGETS=new Set(['Surge','Mihomo']);
 const TOKEN=/^[A-Za-z0-9]{8}$/;
@@ -48,7 +50,8 @@ async function handlePublish(request,env,url){
  if(!data||typeof data!=='object'||Array.isArray(data))return shortText('请求内容不是有效的 JSON 对象',400);
  if(typeof data.content!=='string'||!data.content.trim())return shortText('配置内容不能为空',422);
  if(typeof data.target!=='string'||!TARGETS.has(data.target))return shortText('输出格式必须是 Surge 或 Mihomo',422);
- let ttl=DEFAULT_TTL;
+ // Permanent by default: no ttlSeconds means no expirationTtl and expiresAt=null.
+ let ttl;
  if(data.ttlSeconds!==undefined){
   if(!TTLS.has(data.ttlSeconds))return shortText('有效期参数不在允许范围内',400);
   ttl=data.ttlSeconds;
@@ -66,9 +69,10 @@ async function handlePublish(request,env,url){
  let manageHash;
  try{manageHash=await sha256Hex(manageToken)}catch{return shortText(SHORT_DOWN,503)}
  const createdAt=new Date();
- const expiresAt=new Date(createdAt.getTime()+ttl*1000);
- try{await kv.put('s:'+token,JSON.stringify({content:data.content,target:data.target,createdAt:createdAt.toISOString(),expiresAt:expiresAt.toISOString(),manageHash}),{expirationTtl:ttl})}catch{return shortText(SHORT_DOWN,503)}
- return json({url:url.origin+'/s/'+token,expiresAt:expiresAt.toISOString(),manageToken});
+ const expiresAt=typeof ttl==='number'?new Date(createdAt.getTime()+ttl*1000):null;
+ const record={content:data.content,target:data.target,createdAt:createdAt.toISOString(),expiresAt:expiresAt?expiresAt.toISOString():null,manageHash};
+ try{await kv.put('s:'+token,JSON.stringify(record),expiresAt?{expirationTtl:ttl}:{})}catch{return shortText(SHORT_DOWN,503)}
+ return json({url:url.origin+'/s/'+token,expiresAt:expiresAt?expiresAt.toISOString():null,manageToken});
 }
 async function serveShort(request,env,url){
  if(request.method!=='GET'&&request.method!=='HEAD')return shortText('请求方法不受支持',405,{Allow:'GET, HEAD'});
@@ -83,9 +87,12 @@ async function serveShort(request,env,url){
  let record;
  try{record=JSON.parse(raw)}catch{record=null}
  if(!record||typeof record.content!=='string')return shortText(SHORT_MISSING,404);
- // KV expiry is authoritative; this only covers a record that outlived its TTL.
- const expiry=Date.parse(record.expiresAt);
- if(Number.isFinite(expiry)&&expiry<=Date.now())return shortText(SHORT_MISSING,404);
+ // KV expiry is authoritative. A permanent record stores expiresAt=null and never
+ // lapses here; a record with a real timestamp (older data) keeps its original expiry.
+ if(typeof record.expiresAt==='string'){
+  const expiry=Date.parse(record.expiresAt);
+  if(Number.isFinite(expiry)&&expiry<=Date.now())return shortText(SHORT_MISSING,404);
+ }
  const headers={'Content-Type':'text/plain; charset=utf-8','Cache-Control':'private, no-store','X-Content-Type-Options':'nosniff','Referrer-Policy':'no-referrer','X-Robots-Tag':'noindex, nofollow'};
  return new Response(request.method==='HEAD'?null:record.content,{status:200,headers});
 }

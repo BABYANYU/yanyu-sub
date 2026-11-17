@@ -43,7 +43,9 @@ if(missing.status!==404)throw Error('Unknown API must return 404');
 console.log('API guards verified');
 
 // Hosted short links: a syntactically valid token that was never published must
-// be a clean 404. This probes the lookup path without creating any publication.
+// be a clean 404. Hosted links are permanent by default (no KV expirationTtl), so
+// this probe must not rely on any record expiring: it uses a token that was never
+// stored. This probes the lookup path without creating any publication.
 const short=await get('/s/AAAAAAAA');
 if(short.status!==404)throw Error('Unknown short link must return 404');
 const shortType=short.headers.get('content-type')||'';

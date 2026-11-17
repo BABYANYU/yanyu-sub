@@ -305,6 +305,48 @@ test('publish and short-link routes are routed ahead of the static handler', asy
   }
 });
 
+test('POST /api/publish is permanent unless ttlSeconds is explicitly sent', async () => {
+  const store = new Map();
+  const puts = [];
+  const CONFIGS = {
+    async get(key) { return store.has(key) ? store.get(key) : null; },
+    async put(key, value, options) { puts.push({key, value, options}); store.set(key, value); },
+    async delete(key) { store.delete(key); },
+  };
+  const send = (body, ip) => new Request(ORIGIN + '/api/publish', {
+    method: 'POST',
+    headers: {Origin: origin, 'Content-Type': 'application/json', 'CF-Connecting-IP': ip},
+    body: JSON.stringify(body),
+  });
+
+  const permanent = await worker.fetch(send({content: 'trojan://a@node.example.com:443#n', target: 'Surge'}, '203.0.113.221'), {CONFIGS});
+  assert.equal(permanent.status, 200);
+  const body = await permanent.json();
+  assert.deepEqual(Object.keys(body).sort(), ['expiresAt', 'manageToken', 'url']);
+  assert.equal(body.expiresAt, null, 'the default publication must not expire');
+  assert.equal(puts.length, 1);
+  assert.equal(puts[0].options?.expirationTtl, undefined, 'no expirationTtl when ttlSeconds is omitted');
+  assert.equal(JSON.parse(puts[0].value).expiresAt, null);
+  const served = await worker.fetch(new Request(body.url), {CONFIGS});
+  assert.equal(served.status, 200);
+
+  const explicit = await worker.fetch(send({content: 'trojan://a@node.example.com:443#n', target: 'Mihomo', ttlSeconds: 3600}, '203.0.113.222'), {CONFIGS});
+  assert.equal(explicit.status, 200);
+  const timed = await explicit.json();
+  assert.equal(typeof timed.expiresAt, 'string');
+  assert.ok(Date.parse(timed.expiresAt) > Date.now());
+  assert.equal(puts[1].options?.expirationTtl, 3600);
+
+  let ip = 0;
+  for (const ttlSeconds of [0, 60, 604801, '3600', null, true]) {
+    ip += 1;
+    const rejected = await worker.fetch(send({content: 'trojan://a@node.example.com:443#n', target: 'Surge', ttlSeconds}, `192.0.2.${ip}`), {CONFIGS});
+    assert.equal(rejected.status, 400, JSON.stringify(ttlSeconds));
+    assert.match((await rejected.json()).message, /有效期/);
+  }
+  assert.equal(puts.length, 2, 'rejected TTLs must not write to KV');
+});
+
 test('short-link errors are generic and never reflect the requested path', async () => {
   for (const path of ['/s/nope', '/s/..%2f..%2fsrc%2fworker.js', '/s/AbCd1234/extra', '/s/AbCd1234%20']) {
     const response = await worker.fetch(new Request(ORIGIN + path), {});

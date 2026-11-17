@@ -219,11 +219,26 @@ test('documentation records the hosted short link contract', async () => {
   assert.match(doc, /\/s\/Ab3dE9kZ/, 'the documented example must show the real short link shape');
   assert.match(doc, /即凭据|视同密码|等同于密码/, 'the doc must state that the link itself is the credential');
   assert.match(doc, /CONFIGS/);
-  assert.match(doc, /30 天/, 'the TTL ceiling is 30 days');
+  // Hosted links are permanent by default; a fixed lifetime must never be documented as the default.
+  assert.match(doc, /默认永久|默认.*不过期/, 'the doc must state that hosted links are permanent by default');
+  assert.doesNotMatch(doc, /7 天（默认）|`604800`（默认）|默认 7 天|默认 30 天/, 'no fixed TTL may be documented as the default');
+  assert.match(doc, /expirationTtl/, 'permanent records are stored without a KV expirationTtl');
+  assert.match(doc, /3600[\s\S]{0,160}2592000/, 'the optional explicit TTL set (1h/1d/7d/30d) must stay documented');
+  assert.match(doc, /撤销即删除|撤销[^。\n]{0,20}kv\.delete/, 'revoking must be documented as deleting the KV record');
   assert.match(doc, /管理令牌|管理令牌哈希/, 'management tokens are stored hashed only');
   assert.match(doc, /节点密码/, 'readers must be warned the config contains node credentials');
   assert.match(doc, /\/source\.tar\.gz/, 'the AGPL source archive stays downloadable');
   assert.match(doc, /\/api\/publish/);
+});
+
+test('README documents permanent hosted links and how to revoke them', async () => {
+  const readme = await read('README.md');
+  assert.match(readme, /默认永久|永久有效/, 'README must say hosted links are permanent by default');
+  assert.match(readme, /链接即凭据/, 'README must keep the link-is-the-credential warning');
+  assert.match(readme, /撤销/, 'README must explain revocation');
+  assert.match(readme, /expirationTtl|KV 无过期时间/, 'README must say permanent records carry no KV expiry');
+  assert.match(readme, /3600|1 小时/, 'the optional explicit TTL must stay documented');
+  assert.doesNotMatch(readme, /7 天（默认）|默认 7 天|最长 30 天|上限 30 天/, 'README must not claim a 7-day default or a 30-day ceiling');
 });
 
 test('verify-live homepage probes exist in the shipped markup', async () => {

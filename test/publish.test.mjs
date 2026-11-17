@@ -50,7 +50,7 @@ const publish = (body, headers = {}) => new Request(ORIGIN + '/api/publish', {
 
 const content = 'trojan://fixture@node.example.com:443?sni=t.example.com#Fixture';
 
-test('publish stores the config, returns a short URL and serves it back verbatim', async () => {
+test('publish stores the config, returns a permanent short URL and serves it back verbatim', async () => {
   const CONFIGS = memoryKV();
   const published = await worker.fetch(publish({content, target: 'Mihomo'}), {CONFIGS});
   assert.equal(published.status, 200);
@@ -58,13 +58,14 @@ test('publish stores the config, returns a short URL and serves it back verbatim
   assert.equal(published.headers.get('x-content-type-options'), 'nosniff');
   const body = await published.json();
   assert.deepEqual(Object.keys(body).sort(), ['expiresAt', 'manageToken', 'url']);
+  assert.equal(body.expiresAt, null, 'a default publication never expires');
 
   const token = body.url.slice((origin + '/s/').length);
   assert.equal(body.url, origin + '/s/' + token);
   assert.match(token, /^[A-Za-z0-9]{8}$/);
   assert.match(body.manageToken, /^[0-9a-f]{64}$/, 'manage token must be 32 random bytes, hex encoded');
 
-  // Stored record: one KV write, private fields, TTL enforced by KV itself.
+  // Stored record: one KV write, private fields, no expiry at all.
   assert.equal(CONFIGS.puts.length, 1);
   const [{key, value, options}] = CONFIGS.puts;
   assert.equal(key, 's:' + token);
@@ -72,7 +73,9 @@ test('publish stores the config, returns a short URL and serves it back verbatim
   const stored = JSON.parse(value);
   assert.equal(stored.content, content);
   assert.equal(stored.target, 'Mihomo');
-  assert.equal(options.expirationTtl, 604800, 'default TTL is 7 days');
+  assert.equal(stored.expiresAt, null, 'permanent records keep expiresAt=null');
+  assert.equal(options?.expirationTtl, undefined, 'a default publication must not set expirationTtl');
+  assert.equal(options?.expiration, undefined);
   assert.match(stored.manageHash, /^[0-9a-f]{64}$/);
   assert.notEqual(stored.manageHash, body.manageToken, 'only the hash may be stored');
   assert.equal(JSON.parse(value).content === body.manageToken, false);
@@ -99,7 +102,7 @@ test('HEAD /s/:token sends the same headers without a body', async () => {
   assert.equal(head.headers.get('x-content-type-options'), 'nosniff');
 });
 
-test('only the whitelisted TTL values are accepted and they reach KV', async () => {
+test('an explicit legacy TTL is still honoured end to end', async () => {
   for (const ttlSeconds of [3600, 86400, 604800, 2592000]) {
     const CONFIGS = memoryKV();
     const response = await worker.fetch(publish({content, target: 'Surge', ttlSeconds}), {CONFIGS});
@@ -111,7 +114,44 @@ test('only the whitelisted TTL values are accepted and they reach KV', async () 
     const span = Date.parse(expiresAt) - Date.parse(stored.createdAt);
     assert.equal(span, ttlSeconds * 1000, `expiresAt must be createdAt + ${ttlSeconds}s`);
     assert.ok(Date.parse(expiresAt) > Date.now() - 5000);
+    // The explicit TTL also still gates serving once the record is stale.
+    const stale = memoryKV();
+    await stale.put('s:AbCd1234', JSON.stringify({content, target: 'Surge', createdAt: new Date(Date.now() - 2 * ttlSeconds * 1000).toISOString(),
+      expiresAt: new Date(Date.now() - 1000).toISOString(), manageHash: 'a'.repeat(64)}));
+    assert.equal((await worker.fetch(new Request(origin + '/s/AbCd1234'), {CONFIGS: stale})).status, 404);
   }
+});
+
+test('a publication without ttlSeconds is permanent and never lapses in GET', async () => {
+  const CONFIGS = memoryKV();
+  const response = await worker.fetch(publish({content, target: 'Surge'}), {CONFIGS});
+  assert.equal(response.status, 200);
+  const body = await response.json();
+  assert.equal(body.expiresAt, null);
+  assert.equal(CONFIGS.puts[0].options?.expirationTtl, undefined, 'no expirationTtl for permanent links');
+  assert.equal(JSON.parse(CONFIGS.puts[0].value).expiresAt, null);
+
+  // expiresAt:null, expiresAt omitted and a missing field all serve: only a real
+  // timestamp in the past may retire a record.
+  const token = body.url.split('/').pop();
+  for (const [name, record] of [
+    ['permanent', {content, target: 'Surge', createdAt: new Date().toISOString(), expiresAt: null, manageHash: 'a'.repeat(64)}],
+    ['legacy-null', {content, target: 'Surge', createdAt: new Date().toISOString(), manageHash: 'a'.repeat(64)}],
+    ['legacy-future', {content, target: 'Surge', createdAt: new Date().toISOString(),
+      expiresAt: new Date(Date.now() + 86400e3).toISOString(), manageHash: 'a'.repeat(64)}],
+  ]) {
+    const kv = memoryKV();
+    await kv.put('s:' + token, JSON.stringify(record));
+    const served = await worker.fetch(new Request(body.url), {CONFIGS: kv});
+    assert.equal(served.status, 200, name);
+    assert.equal(await served.text(), content, name);
+  }
+  // A record that only KV expiry would have removed is still gone once the
+  // timestamp has passed (old data keeps its original expiry).
+  const legacy = memoryKV();
+  await legacy.put('s:' + token, JSON.stringify({content, target: 'Surge', createdAt: new Date(Date.now() - 7200e3).toISOString(),
+    expiresAt: new Date(Date.now() - 3600e3).toISOString(), manageHash: 'a'.repeat(64)}));
+  assert.equal((await worker.fetch(new Request(body.url), {CONFIGS: legacy})).status, 404);
 });
 
 test('an out-of-range or non-numeric ttl is refused before anything is stored', async () => {
