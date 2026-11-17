@@ -5,7 +5,7 @@ const LIMIT=1024*1024;
 const secure={'Cache-Control':'private, no-store','X-Content-Type-Options':'nosniff','Referrer-Policy':'no-referrer','X-Frame-Options':'DENY','Permissions-Policy':'camera=(), microphone=(), geolocation=()'};
 const rate=new Map();
 let lastPrune=0;
-function json(body,status=200){return Response.json(body,{status,headers:secure});}
+function json(body,status=200,extra={}){return Response.json(body,{status,headers:{...secure,...extra}});}
 // Cloudflare rejects timers and I/O in the global scope, so prune lazily per request.
 function prune(now){for(const [host,x]of rate)if(now-x.start>60000)rate.delete(host);lastPrune=now}
 function limited(host){const now=Date.now();if(now-lastPrune>60000)prune(now);const x=rate.get(host)||{start:now,n:0};if(now-x.start>=60000){x.start=now;x.n=0}x.n++;rate.set(host,x);return x.n<=10}
@@ -27,11 +27,13 @@ export default {async fetch(request,env){
  const url=new URL(request.url);
  if(url.pathname==='/api/health')return json({ok:true,engine:'Sub-Store 2.44.16',targets:['Surge','Mihomo'],...buildInfo});
  if(url.pathname==='/api/fetch'){
-  if(request.method!=='POST')return json({message:'请使用 POST 请求'},405);
-  const ip=request.headers.get('CF-Connecting-IP')||'unknown';if(!limited(ip))return json({message:'请求过于频繁，请稍后重试'},429);
+  if(request.method!=='POST')return json({message:'请使用 POST 请求'},405,{Allow:'POST'});
   if(request.headers.get('Origin')!==url.origin||!request.headers.get('content-type')?.startsWith('application/json'))return json({message:'请求来源不匹配'},403);
+  const ip=request.headers.get('CF-Connecting-IP')||'unknown';if(!limited(ip))return json({message:'请求过于频繁，请稍后重试'},429);
   try{
-   const text=await limitedText(request,16384);const data=JSON.parse(text);const source=validateSource(data.url,url.hostname);
+   let text;
+   try{text=await limitedText(request,16384)}catch(error){if(error?.message==='SIZE')return json({message:'请求内容过长'},413);throw error}
+   const data=JSON.parse(text);const source=validateSource(data.url,url.hostname);
    if(env.SKIP_DNS_PREFLIGHT!==true&&env.SKIP_DNS_PREFLIGHT!=='true')await validateResolvedSource(source,{ownHost:url.hostname});
    const controller=new AbortController();const timer=setTimeout(()=>controller.abort(),10000);
    try{

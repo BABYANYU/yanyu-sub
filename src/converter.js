@@ -29,7 +29,12 @@ function yamlLoad(raw){
 }
 function parseOne(line,index){
  if(line.length>32768)bad(`第 ${index+1} 行过长`);
- for(const parser of PARSERS){if(!parser.test(line))continue;try{return lastParse(parser.parse(line))}catch{}}
+ for(const parser of PARSERS){
+  let matches=false;
+  try{matches=parser.test(line)}catch{matches=false}
+  if(!matches)continue;
+  try{return lastParse(parser.parse(line))}catch{}
+ }
  bad(`第 ${index+1} 个节点格式无效或协议暂不支持`);
 }
 export function parseInput(text){
