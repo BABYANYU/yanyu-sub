@@ -42,13 +42,13 @@
         <div class="group-head result-head"><h2 id="result-title">配置已生成</h2><span id="result-badge" class="badge">已就绪</span></div>
         <p id="result-summary" class="result-summary"></p>
         <div id="warning-panel" class="notice notice-warning" hidden><h3>有节点需要检查</h3><p>以下内容未完整转换，请检查后再导出可用节点。</p><ul id="warning-list"></ul><label class="acknowledge"><input id="accept-partial" type="checkbox"><span id="accept-label">我已查看问题，仅导出可用节点</span></label></div>
-        <div class="result-actions"><button id="download" class="button button-primary" type="button">下载配置</button><button id="copy" class="button button-quiet" type="button">复制配置</button></div>
+        <div class="result-actions"><button id="download" class="button button-quiet" type="button">下载配置</button><button id="copy" class="button button-quiet" type="button">复制配置</button></div>
         <div class="publish" aria-labelledby="publish-title">
           <h3 id="publish-title">订阅链接</h3>
           <p class="publish-help">生成一个短链接，可直接导入 Surge 或 Mihomo。</p>
           <div class="publish-controls">
             <label class="publish-ttl" for="publish-ttl"><span class="sr-only">订阅链接有效期</span><select id="publish-ttl" name="publish-ttl"><option value="86400">1 天</option><option value="604800" selected>7 天</option><option value="2592000">30 天</option></select></label>
-            <button id="publish" class="button button-quiet" type="button">生成订阅链接</button>
+            <button id="publish" class="button button-primary" type="button">生成订阅链接</button>
           </div>
           <div id="publish-status" class="publish-status" role="status" aria-live="polite" aria-atomic="true"></div>
           <div id="published" class="published" hidden>
