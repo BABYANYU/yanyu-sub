@@ -254,7 +254,6 @@ copy.addEventListener('click', async () => {
   }
 });
 
-addSource();
 if (/iPhone|iPad|iPod/i.test(navigator.userAgent)) {
   form.querySelector('input[value="Surge"]').checked = true;
 } else if (/Windows/i.test(navigator.userAgent)) {

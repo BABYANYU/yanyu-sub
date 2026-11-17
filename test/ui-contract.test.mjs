@@ -139,3 +139,9 @@ test('page chrome omits the source links and footer copy', () => {
   assert.doesNotMatch(html, /class="site-footer"/);
   assert.doesNotMatch(html, /privacy-note/);
 });
+
+test('app.js does not call functions removed with the multi-source UI', () => {
+  for (const name of ['addSource', 'updateSourceLabels', 'checkSources']) {
+    assert.doesNotMatch(app, new RegExp(`\\b${name}\\s*\\(`), `${name}() was removed with the multi-source UI`);
+  }
+});
