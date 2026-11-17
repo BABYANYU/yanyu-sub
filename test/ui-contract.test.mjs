@@ -52,16 +52,17 @@ test('radio values stay identical to the converter target whitelist', () => {
   }
 });
 
-test('the source template still provides what addSource() clones', () => {
-  const template = html.match(/<template id="source-template">([\s\S]*?)<\/template>/);
-  assert.ok(template, 'source-template must stay a <template>');
-  const body = template[1];
-  assert.match(body, /<label(?:\s|>)/);
-  assert.match(body, /class="[^"]*\bremove-source\b/);
-  assert.match(body, /<textarea[^>]*class="[^"]*\bsource-input\b/);
-  assert.match(body, /aria-describedby="sources-help"/);
-  assert.ok(ids.has('sources-help'), 'aria-describedby target must exist');
-  assert.match(app, /template\.content\.firstElementChild\.cloneNode\(true\)/);
+test('the source area is a single textarea wired to the converter', () => {
+  const area = html.match(/<textarea[^>]*id="source-input"[^>]*>/)?.[0] || '';
+  assert.ok(area, 'a single #source-input must exist');
+  assert.match(area, /class="[^"]*\bsource-input\b/);
+  assert.match(area, /aria-describedby="sources-help"/);
+  assert.ok(ids.has('sources-help'));
+  assert.equal(ids.has('sources'), false, 'multi-source container must be gone');
+  assert.equal(ids.has('source-template'), false, 'multi-source template must be gone');
+  assert.equal(ids.has('add-source'), false, 'add-source control must be gone');
+  assert.match(app, /\$\(\s*'#source-input'\s*\)/);
+  assert.match(app, /sources: \[text\]/);
 });
 
 test('collapsible result and error panels stay hidden until app.js reveals them', () => {
@@ -133,12 +134,8 @@ test('README keeps disclosing that link sources are fetched by this site', () =>
   assert.match(readme, /Cloudflare Worker 拉取/);
 });
 
-// DEFECT (UI revamp): the privacy note was reduced to "文本在浏览器内转换，订阅内容
-// 不保存。", which omits that subscription *links* are transmitted to this site's
-// Worker. Kept as a skip so the gap is visible without failing the build; delete
-// the skip once the note discloses the server-side fetch again.
-test('privacy note in the output panel discloses the server-side fetch', () => {
-  const note = html.match(/<p class="privacy-note">([\s\S]*?)<\/p>/)?.[1] || '';
-  assert.ok(note.length > 0, 'the output panel must keep a privacy note');
-  assert.match(note, /Cloudflare|本站|服务器|服务获取/, 'privacy note must disclose that subscription links are fetched by this site');
+test('page chrome omits the source links and footer copy', () => {
+  assert.doesNotMatch(html, /class="quiet-link"/);
+  assert.doesNotMatch(html, /class="site-footer"/);
+  assert.doesNotMatch(html, /privacy-note/);
 });

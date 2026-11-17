@@ -2,24 +2,20 @@ import { convertSources } from './converter.js';
 
 const $ = (selector) => document.querySelector(selector);
 const form = $('#convert-form');
-const sourcesContainer = $('#sources');
-const template = $('#source-template');
+const sourceInput = $('#source-input');
 const resultPanel = $('#result');
 const errorPanel = $('#error-panel');
 const status = $('#status');
 const generate = $('#generate');
-const addSourceButton = $('#add-source');
 const download = $('#download');
 const copy = $('#copy');
 const acceptPartial = $('#accept-partial');
 // Same envelope the converter and the Worker enforce; checked before any request.
-const MAX_SOURCES = 4;
 const MAX_URL_LENGTH = 8192;
 const CONVERT_TIMEOUT_MS = 90000;
 // Exact test used by convertSources() in converter.js to treat a source as a link.
 const URL_INPUT = /^https?:\/\/[^\s]+$/;
 const URL_LINE = /^https?:\/\/\S+$/i;
-let nextSourceId = 0;
 let revision = 0;
 let running = false;
 let result = null;
@@ -42,48 +38,6 @@ function invalidate() {
   copy.disabled = true;
   if (hadResult || running) status.textContent = '内容已更改，请重新生成。';
   else status.textContent = '';
-}
-
-function updateSourceLabels() {
-  const cards = [...sourcesContainer.children];
-  cards.forEach((card, index) => {
-    card.querySelector('label').textContent = `订阅 ${index + 1}`;
-    const remove = card.querySelector('.remove-source');
-    remove.hidden = cards.length === 1;
-    remove.setAttribute('aria-label', `移除订阅 ${index + 1}`);
-  });
-  $('#source-count').textContent = `${cards.length} 个来源`;
-  // The converter refuses more than 4 sources, so stop the UI from offering them.
-  const atLimit = cards.length >= MAX_SOURCES;
-  addSourceButton.disabled = atLimit;
-  addSourceButton.setAttribute('aria-disabled', String(atLimit));
-  if (atLimit) addSourceButton.title = `最多 ${MAX_SOURCES} 个订阅来源`;
-  else addSourceButton.removeAttribute('title');
-}
-
-function addSource(focus = false) {
-  if (sourcesContainer.children.length >= MAX_SOURCES) return;
-  const card = template.content.firstElementChild.cloneNode(true);
-  const input = card.querySelector('textarea');
-  input.id = `source-${++nextSourceId}`;
-  card.querySelector('label').htmlFor = input.id;
-  input.addEventListener('input', () => {
-    input.removeAttribute('aria-invalid');
-    invalidate();
-  });
-  card.querySelector('.remove-source').addEventListener('click', () => {
-    const neighbor = card.nextElementSibling || card.previousElementSibling;
-    card.remove();
-    invalidate();
-    updateSourceLabels();
-    (neighbor?.querySelector('textarea') || $('#add-source')).focus();
-  });
-  sourcesContainer.append(card);
-  updateSourceLabels();
-  if (focus) {
-    invalidate();
-    input.focus();
-  }
 }
 
 // Keep credentials and source addresses out of visible diagnostic text.
@@ -118,34 +72,19 @@ function sourceUrlProblem(text) {
   return '';
 }
 
-// Returns {index, message} for the first rejected source, or null.
-function checkSources(texts) {
-  if (texts.length > MAX_SOURCES) {
-    return { index: MAX_SOURCES, message: `最多合并 ${MAX_SOURCES} 个订阅来源，请先移除多余的来源。` };
+// Returns a message for the rejected source, or null.
+function checkSource(text) {
+  if (!text) return '请粘贴订阅链接或订阅文本。';
+  if (URL_INPUT.test(text)) {
+    return sourceUrlProblem(text);
   }
-  for (const [index, text] of texts.entries()) {
-    const label = `订阅 ${index + 1}`;
-    if (!text) {
-      return {
-        index,
-        message: texts.length > 1
-          ? `请在 ${label} 中粘贴链接或内容，或移除这个来源。`
-          : '请粘贴订阅链接或订阅文本。',
-      };
-    }
-    if (URL_INPUT.test(text)) {
-      const problem = sourceUrlProblem(text);
-      if (problem) return { index, message: `${label}：${problem}` };
-      continue;
-    }
-    // Everything below is text conversion; catch the obvious "link pasted as text" cases.
-    const lines = text.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
-    if (lines.length > 1 && lines.every((line) => URL_LINE.test(line))) {
-      return { index, message: `${label} 包含多条链接；每个来源只填一个，其余请点“添加来源”。` };
-    }
-    if (lines.length === 1 && URL_LINE.test(lines[0])) {
-      return { index, message: `${label} 的链接无法识别，请确认以小写 https:// 开头且不含空格。` };
-    }
+  // Everything below is text conversion; catch the obvious "link pasted as text" cases.
+  const lines = text.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+  if (lines.length > 1 && lines.every((line) => URL_LINE.test(line))) {
+    return '这里包含多个链接；请只填写一个订阅链接，节点文本可直接粘贴多行。';
+  }
+  if (lines.length === 1 && URL_LINE.test(lines[0])) {
+    return '链接无法识别，请确认以小写 https:// 开头且不含空格。';
   }
   return null;
 }
@@ -190,21 +129,24 @@ function withTimeout(promise, ms) {
   return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
 }
 
-addSourceButton.addEventListener('click', () => addSource(true));
+sourceInput.addEventListener('input', () => {
+  sourceInput.removeAttribute('aria-invalid');
+  invalidate();
+});
+
 form.querySelectorAll('input[name="target"]').forEach((input) => input.addEventListener('change', invalidate));
 acceptPartial.addEventListener('change', updateExportState);
 
 form.addEventListener('submit', async (event) => {
   event.preventDefault();
   if (running) return;
-  const inputs = [...sourcesContainer.querySelectorAll('textarea')];
-  inputs.forEach((input) => input.removeAttribute('aria-invalid'));
-  const texts = inputs.map((input) => input.value.trim());
+  sourceInput.removeAttribute('aria-invalid');
+  const text = sourceInput.value.trim();
   // Validate before touching the current result so a fixable input error does not
   // discard what the user already generated.
-  const problem = checkSources(texts);
+  const problem = checkSource(text);
   if (problem) {
-    showError(problem.message, inputs[problem.index]);
+    showError(problem, sourceInput);
     return;
   }
   const targetInput = form.querySelector('input[name="target"]:checked');
@@ -221,7 +163,7 @@ form.addEventListener('submit', async (event) => {
   generate.setAttribute('aria-busy', 'true');
   status.textContent = '正在读取并转换订阅，请稍候…';
   try {
-    const converted = await withTimeout(convertSources({ target, sources: texts }), CONVERT_TIMEOUT_MS);
+    const converted = await withTimeout(convertSources({ target, sources: [text] }), CONVERT_TIMEOUT_MS);
     if (requestRevision !== revision) return;
     if (!converted || typeof converted.content !== 'string' || !converted.content.trim() || !Number.isInteger(converted.count) || converted.count < 1) {
       showError('没有可导出的节点，请检查订阅内容或切换输出格式。');
@@ -251,7 +193,7 @@ form.addEventListener('submit', async (event) => {
     if (error?.name === 'TimeoutError') {
       // The request keeps running in the background; drop whatever it returns.
       revision += 1;
-      showError(`订阅读取超过 ${Math.round(CONVERT_TIMEOUT_MS / 1000)} 秒未完成，请检查网络或改用更少的来源后重试。`);
+      showError(`订阅读取超过 ${Math.round(CONVERT_TIMEOUT_MS / 1000)} 秒未完成，请检查网络后重试。`);
       return;
     }
     if (requestRevision !== revision) return;
