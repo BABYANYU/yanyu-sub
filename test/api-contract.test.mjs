@@ -51,7 +51,13 @@ test('health exposes no env, secret or storage binding', async () => {
   });
   const text = await response.text();
   assert.doesNotMatch(text, /must-not-leak/);
-  assert.doesNotMatch(text, /SKIP_DNS_PREFLIGHT|kv|d1|r2|bucket|token/i);
+  const body = JSON.parse(text);
+  // Inspect the values, not the whole payload: the revision hash is hex and can
+  // coincidentally contain short tokens such as "d1" or "r2".
+  assert.deepEqual(Object.keys(body).sort(), ['engine', 'ok', 'revision', 'targets', 'version']);
+  const values = [body.engine, body.version, ...(body.targets || [])].join(' ');
+  assert.doesNotMatch(values, /kv|d1|r2|bucket|token|secret|skip_dns/i);
+  assert.ok(body.revision === 'local' || /^[0-9a-f]{40}$/.test(body.revision));
 });
 
 test('static assets are served byte-identical with the hardened header set', async () => {
