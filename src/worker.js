@@ -31,7 +31,7 @@ export default {async fetch(request,env){
   if(request.headers.get('Origin')!==url.origin||!request.headers.get('content-type')?.startsWith('application/json'))return json({message:'请求来源不匹配'},403);
   try{
    const text=await limitedText(request,16384);const data=JSON.parse(text);const source=validateSource(data.url,url.hostname);
-   if(!env.SKIP_DNS_PREFLIGHT)await validateResolvedSource(source,{ownHost:url.hostname});
+   if(env.SKIP_DNS_PREFLIGHT!==true&&env.SKIP_DNS_PREFLIGHT!=='true')await validateResolvedSource(source,{ownHost:url.hostname});
    const controller=new AbortController();const timer=setTimeout(()=>controller.abort(),10000);
    try{
     const response=await fetch(source.href,{method:'GET',redirect:'manual',signal:controller.signal,headers:{'User-Agent':'Surge/6.0 YanyuSub/1.0','Accept':'text/plain, application/yaml, application/json, */*'},cache:'no-store'});

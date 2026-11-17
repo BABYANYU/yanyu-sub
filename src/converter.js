@@ -8,6 +8,10 @@ import {lastParse} from '../vendor/normalizer.js';
 const MAX_BYTES=1024*1024, MAX_NODES=2000;
 const supported=new Set(['ss','ssr','vmess','vless','trojan','anytls','hysteria2','hysteria','tuic','socks5','http','snell','wireguard']);
 const blocked=new Set(['__proto__','prototype','constructor']);
+// Surge built-in policy names may not be redefined as node names.
+const RESERVED=new Set(['DIRECT','REJECT','REJECT-DROP','REJECT-NO-DROP','REJECT-TINYGIF','CELLULAR','CELLULAR-ONLY','HYBRID','NO-HYBRID','Proxy']);
+// Fields the Surge producer writes without surrounding quotes.
+const UNQUOTED=new Set(['ws-opts.path','ws-opts.headers','grpc-opts.grpc-service-name','xhttp-opts.path','uuid','token','reality-opts.short-id','reality-opts.public-key','obfs','obfs-password','plugin-opts.password','plugin-opts.host','obfs-opts.password','obfs-opts.host','servername','test-url']);
 export class ConversionError extends Error{constructor(message){super(message);this.name='ConversionError'}}
 function bad(message){throw new ConversionError(message)}
 function checkTree(obj,depth=0){
@@ -58,7 +62,7 @@ function normalize(p,i){
  n.name=String(n.name||`节点 ${i+1}`).trim();if(!n.name||n.name.length>120)bad(`第 ${i+1} 个节点名称无效`);
  // Surge policy/group names have structural delimiters; use explicit safe aliases.
  n.name=n.name.replace(/[,=;"'\[\]|#]/g,' ').replace(/\s+/g,' ').trim()||`节点 ${i+1}`;
- if(['DIRECT','REJECT','Proxy'].includes(n.name))n.name+=' 节点';
+ if(RESERVED.has(n.name))n.name+=' 节点';
  if(['vless','vmess'].includes(n.type)){if(!n.uuid)bad(`第 ${i+1} 个节点缺少用户 ID`);n.network ||= 'tcp';n.sni ||= n.servername;}
  if(['trojan','anytls','hysteria2','tuic'].includes(n.type))n.tls=true;
  if(n.type==='trojan')n.network ||= 'tcp';
@@ -70,17 +74,28 @@ function normalize(p,i){
    n.tls=true;n['client-fingerprint'] ||= 'chrome';
  }
  if(n.type==='tuic'&&n.token&&(n.uuid||n.password))bad('TUIC v4 与 v5 认证字段不能混合');
+ // The generated profile contains exactly one select group, so cross-node references cannot survive.
+ if(n['dialer-proxy'])bad(`第 ${i+1} 个节点依赖其他策略，当前单组模板无法保留该引用`);
  return n;
 }
 function surgeGuard(n){
  if(n.type==='ssr'||n.type==='hysteria'||n.type==='wireguard')bad(`节点“${n.name}”暂不支持输出 Surge`);
  if(n['ech-opts']||n.smux||n['dialer-proxy']||n['underlying-proxy'])bad(`节点“${n.name}”含依赖其他策略或目标不兼容参数`);
+ if(n.type==='anytls'&&(n.plugin||n['plugin-opts']||n['shadow-tls-opts']||n['restls-opts']||n['jls-opts']))bad(`节点“${n.name}”的 TLS 伪装插件在 Surge 无等值配置`);
  if(n.type==='anytls'&&(n['reality-opts']||['idle-session-check-interval','idle-session-timeout','min-idle-session','client-metadata'].some(k=>n[k]!==undefined)))bad(`节点“${n.name}”的 AnyTLS 会话参数在 Surge 无等值配置`);
  if(n.type==='hysteria2'&&n.obfs==='salamander')bad(`节点“${n.name}”使用的 Salamander 混淆未在 Surge iOS 文档中提供支持`);
  if(n.type==='vless'&&n.network==='grpc'&&n.flow)bad(`节点“${n.name}”不能同时使用 gRPC 和 Vision`);
  if(n['xhttp-opts']?.['download-settings'])bad(`节点“${n.name}”的 XHTTP 分离下载配置不受 Surge 支持`);
- // The upstream producer uses inline parameters; quoted/control data must not add policies.
- function validate(v,k=''){if(typeof v==='string'&&k!=='name'&&/[\r\n\u0000-\u001f"\u2028\u2029]/u.test(v))bad(`节点“${n.name}”的参数无法安全写入 Surge`);if(v&&typeof v==='object')for(const [key,val]of Object.entries(v))validate(val,key)}validate(n);
+ if(n.type==='vless'&&['xtls-rprx-vision','xtls-rprx-vision-udp443'].includes(n.flow)===false&&n.flow)bad(`节点“${n.name}”的 flow 取值不受支持`);
+ // The upstream producer writes many parameters unquoted; structure separators must not reach the profile.
+ function walk(v,path){
+  if(typeof v==='string'&&path!=='name'){
+   if(/[\r\n\u0000-\u001f\u007f\u2028\u2029\\"]/u.test(v))bad(`节点“${n.name}”的参数无法安全写入 Surge`);
+   if(UNQUOTED.has(path)&&/[,=]/u.test(v))bad(`节点“${n.name}”的 ${path} 含 Surge 结构分隔符`);
+  }
+  if(v&&typeof v==='object')for(const [k,val]of Object.entries(v))walk(val,path?`${path}.${k}`:k);
+ }
+ walk(n,'');
 }
 export function convertTexts({target,sources}){
  if(!['Surge','Mihomo'].includes(target))bad('仅支持 Surge 或 Mihomo');

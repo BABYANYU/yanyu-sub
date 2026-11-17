@@ -67,7 +67,7 @@ function addSource(focus = false) {
 // Keep credentials and source addresses out of visible diagnostic text.
 function cleanDiagnostic(value) {
   return String(value)
-    .replace(/(?:https?|ss|ssr|vmess|vless|trojan|hysteria2?|hy2|tuic):\/\/[^\s<>"'，。；]+/gi, '[链接已隐藏]')
+    .replace(/(?:https?|ss|ssr|ss2022|vmess|vless|trojan|hysteria2?|hy2|tuic|anytls|socks5?|snell|wireguard|wg):\/\/[^\s<>"'，。；]+/gi, '[链接已隐藏]')
     .replace(/(?:token|password|passwd|secret|authorization|api[-_]?key)\s*[:=]\s*[^\s,，;；]+/gi, '[凭据已隐藏]')
     .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, '')
     .slice(0, 500);

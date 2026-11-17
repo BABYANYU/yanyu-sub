@@ -15,6 +15,35 @@ const MAX_CNAME_DEPTH = 8;
 
 function deny() { throw new Error(DENIED); }
 
+// The declared Content-Length is only an early hint; bound the actual body bytes.
+async function readJsonBounded(response) {
+  const reader = response.body?.getReader();
+  if (!reader) deny();
+  const chunks = [];
+  let total = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.length;
+    if (total > 65536) {
+      await reader.cancel();
+      deny();
+    }
+    chunks.push(value);
+  }
+  const merged = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    merged.set(chunk, offset);
+    offset += chunk.length;
+  }
+  try {
+    return JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(merged));
+  } catch {
+    deny();
+  }
+}
+
 function dnsName(value) {
   if (typeof value !== 'string') deny();
   const name = value.toLowerCase().replace(/\.$/, '');
@@ -138,7 +167,7 @@ export async function validateResolvedSource(input, {
       });
       if (!response || !response.ok || response.redirected ||
           Number(response.headers?.get('content-length')) > 65536) deny();
-      const body = await response.json();
+      const body = await readJsonBounded(response);
       if (!body || body.Status !== 0 || body.TC === true ||
           (body.Answer !== undefined && !Array.isArray(body.Answer))) deny();
       const answers = body.Answer ?? [];
