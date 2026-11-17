@@ -1,0 +1,8 @@
+{
+  "project": "Sub-Store",
+  "repository": "https://github.com/sub-store-org/Sub-Store",
+  "commit": "2a173b88dcbd7d232864f05087998855da59eec1",
+  "version": "2.44.16",
+  "license": "AGPL-3.0",
+  "notes": "Parser/producer subset. Peggy compiled at build time. Runtime app logging replaced; no script operators or remote include execution."
+}

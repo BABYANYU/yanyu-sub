@@ -1,0 +1,15 @@
+node_modules/
+dist/
+.wrangler/
+.env
+.env.*
+!.env.example
+.dev.vars
+.dev.vars.*
+public/converter.js
+public/source.tar.gz
+src/assets.generated.js
+src/build-info.generated.js
+scripts/deploy-browser.cjs
+scripts/browser-test.cjs
+*.log

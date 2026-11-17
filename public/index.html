@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#f6f7f9">
+  <meta name="color-scheme" content="light dark">
+  <title>Yanyu Sub · 订阅转换</title>
+  <meta name="description" content="合并订阅，转换为 Surge 或 Mihomo 配置。">
+  <link rel="stylesheet" href="./style.css">
+  <script type="module" src="./app.js"></script>
+</head>
+<body>
+  <a class="skip-link" href="#main">跳到转换工具</a>
+  <div class="page-shell">
+    <header class="site-header">
+      <a class="brand" href="./" aria-label="Yanyu Sub 首页"><span class="brand-mark" aria-hidden="true">Y</span>Yanyu Sub</a>
+      <a class="source-link" href="/source.tar.gz" download>源代码 <span aria-hidden="true">↗</span></a>
+    </header>
+    <main id="main">
+      <section class="intro" aria-labelledby="page-title">
+        <p class="eyebrow">少一点设置，多一点顺手</p>
+        <h1 id="page-title">你的订阅，<br class="mobile-break">随手转换。</h1>
+        <p class="intro-copy">粘贴链接或文本，合并为一份 Surge 或 Mihomo 配置。</p>
+      </section>
+      <form id="convert-form" novalidate>
+        <section class="panel" aria-labelledby="sources-title">
+          <div class="section-heading"><h2 id="sources-title"><span class="step">01</span>添加订阅</h2><span id="source-count" class="muted">1 个来源</span></div>
+          <p id="sources-help" class="section-help">每个来源粘贴一个订阅链接，或一整段订阅文本。</p>
+          <div id="sources"></div>
+          <button id="add-source" class="button button-subtle add-source" type="button"><span aria-hidden="true">＋</span> 添加来源</button>
+        </section>
+        <section class="panel output-panel" aria-labelledby="target-title">
+          <div class="section-heading"><h2 id="target-title"><span class="step">02</span>选择格式</h2></div>
+          <fieldset class="target-options"><legend class="sr-only">输出格式</legend>
+            <label class="target-option"><input type="radio" name="target" value="Surge" checked><span class="target-description"><strong>Surge</strong><span>iPhone</span></span><span class="radio-indicator" aria-hidden="true"></span></label>
+            <label class="target-option"><input type="radio" name="target" value="Mihomo"><span class="target-description"><strong>Mihomo</strong><span>Windows · Bettbox</span></span><span class="radio-indicator" aria-hidden="true"></span></label>
+          </fieldset>
+          <p class="preset-note"><span aria-hidden="true">✓</span> 国内直连，其他流量走 Proxy；DNS 使用 223.5.5.5。</p>
+          <button id="generate" class="button button-primary" type="submit"><span id="generate-label">生成配置</span><span class="button-arrow" aria-hidden="true">→</span></button>
+          <p class="privacy-note">文本在浏览器内转换；订阅链接经本站 Cloudflare 服务获取，内容不保存。</p>
+        </section>
+      </form>
+      <div id="status" class="status" role="status" aria-live="polite" aria-atomic="true"></div>
+      <section id="error-panel" class="message message-error" role="alert" tabindex="-1" hidden><h2>请检查订阅</h2><p id="error-message"></p></section>
+      <section id="result" class="panel result-panel" aria-labelledby="result-title" tabindex="-1" hidden>
+        <div class="section-heading"><h2 id="result-title">配置已生成</h2><span id="result-badge" class="result-badge">已就绪</span></div>
+        <p id="result-summary" class="result-summary"></p>
+        <div id="warning-panel" class="message message-warning" hidden><h3>有节点需要检查</h3><p>以下内容未完整转换，请检查后再导出可用节点。</p><ul id="warning-list"></ul><label class="acknowledge"><input id="accept-partial" type="checkbox"><span id="accept-label">我已查看问题，仅导出可用节点</span></label></div>
+        <div class="result-actions"><button id="download" class="button button-primary" type="button">下载配置</button><button id="copy" class="button button-secondary" type="button">复制配置</button></div>
+        <details class="preview"><summary>查看配置</summary><label class="sr-only" for="config-preview">生成的配置内容</label><textarea id="config-preview" readonly spellcheck="false" wrap="off"></textarea></details>
+      </section>
+      <aside class="usage-note"><strong>一份配置，两种选择</strong><p>Surge 用于 iPhone，Mihomo 用于 Windows 上的 Bettbox。下载后在对应客户端导入，或复制配置内容。</p></aside>
+    </main>
+    <footer><span>Yanyu Sub</span><span>简洁、透明，订阅由你掌握。</span><a href="/source.tar.gz" download>AGPL · 源代码</a></footer>
+  </div>
+  <template id="source-template"><div class="source-card"><div class="source-heading"><label></label><button class="remove-source" type="button">移除</button></div><textarea class="source-input" rows="4" placeholder="https://example.com/subscribe…&#10;或粘贴订阅文本" autocapitalize="off" autocomplete="off" autocorrect="off" spellcheck="false" aria-describedby="sources-help"></textarea></div></template>
+</body>
+</html>
