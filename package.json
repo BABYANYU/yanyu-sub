@@ -6,7 +6,8 @@
   "license": "AGPL-3.0-only",
   "scripts": {
     "build": "node scripts/build.mjs",
-    "test": "node --test test/*.test.mjs"
+    "test": "node --test test/*.test.mjs",
+    "pretest": "npm run build"
   },
   "dependencies": {
     "buffer": "6.0.3",
