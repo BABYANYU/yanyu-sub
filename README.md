@@ -35,7 +35,7 @@
 - 一次性下载为默认行为；只有选择“生成订阅链接”才会创建可撤销的托管短链，托管短链默认永久有效，页面不提供有效期选项；接口调用方仍可显式传 1 小时 / 1 天 / 7 天 / 30 天让该条链接自动失效。它不会自动刷新内容或跟随源订阅更新：内容变了请重新生成并撤销旧链接。
 - 永久托管意味着你写入的内容会一直留在 KV 里，直到你撤销。长期不用的链接请主动撤销，避免旧凭据长期可下载。
 - 语法转换不等于实际节点连通。Surge VLESS 需要 iOS 6+；部分 Mihomo 内核与新 Xray REALITY 服务端存在兼容性差异。
-- 上游 YAML 引用需先展开；仅外部 provider 的配置请先导出实际节点内容。
+- 源订阅中的 YAML 引用需先展开；仅外部 provider 的配置请先导出实际节点内容。
 
 ## 维护
 
@@ -52,16 +52,16 @@
 
 构建与源码包（`npm run build`）：
 - 资产映射由 `public/` 目录**整目录生成**，不再写死文件名：新增 `public/` 文件自动上线；扩展名没有声明 Content-Type 或缺少 `index.html`/`app.js`/`style.css`/`theme.js`/`converter.js`/`source.tar.gz` 时直接构建失败，避免新增文件静默 404。
-- `public/source.tar.gz`（AGPL 对应源码）会把 `public/` 源文件（含 `theme.js`）全部打进去，生成物与依赖排除；清单里任何一个必需文件缺失都会中止构建，不再静默跳过。
+- `public/source.tar.gz`（完整可构建源码）会把 `public/` 源文件（含 `theme.js`）全部打进去，生成物与依赖排除；清单里任何一个必需文件缺失都会中止构建，不再静默跳过。
 
 Node 24：`npm ci --ignore-scripts`，`npm run build`，`npm test`。
 `src/converter.js` 为输入校验和固定模板；`src/worker.js` 为同源拉取与静态服务；`public/` 为网页。
-`vendor/` 是固定版本的 Sub-Store 解析/输出器子集，三个 Peggy grammar 已预编译，运行时没有动态编译或用户脚本。
-上游提交、版本记录在 `vendor/UPSTREAM.json`。修改后先运行测试，再更新 Cloudflare Worker `yanyu-sub`。
+`vendor/` 是固定版本的第三方解析/输出器子集，三个 Peggy grammar 已预编译，运行时没有动态编译或用户脚本。
+第三方组件的版本记录在 `vendor/UPSTREAM.json`。修改后先运行测试，再更新 Cloudflare Worker `yanyu-sub`。
 保留既有域名、Pages 和其他 Worker，不清理无关项目。
 
 ## 许可证
 
-本项目包含并修改 Sub-Store AGPL-3.0 代码，保留其许可证与原作者署名。
+代码版权归 YANYU。第三方组件的许可证见 `LICENSE` 与 `NOTICE.md`，不在本 README 展开。
 对应可构建源码通过站点 `/source.tar.gz` 提供，不包含任何个人订阅、密钥或账号数据。
 转换输出的节点配置不是本项目源码，包含你的节点凭据，请自行保管。
