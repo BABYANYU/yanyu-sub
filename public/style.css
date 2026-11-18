@@ -97,8 +97,26 @@ textarea:focus-visible { outline-offset: 1px; }
   border-bottom: 1px solid var(--line);
 }
 
-.theme-toggle { min-height: 44px; padding: 0 4px; border: 0; background: transparent; color: var(--muted); font-size: 12px; }
+.theme-toggle { min-height: 44px; min-width: 44px; padding: 0 4px; border: 0; background: transparent; color: var(--muted); font-size: 12px; }
 .theme-toggle:hover { color: var(--ink); }
+.header-actions { display: flex; align-items: center; gap: 10px; }
+.about-link { min-height: 44px; padding: 0 4px; border: 0; background: transparent; color: var(--muted); font-size: 12px; }
+.about-link:hover { color: var(--ink); }
+
+#about-dialog { width: min(440px, calc(100% - 32px)); max-height: calc(100dvh - 48px); overflow: auto; padding: 30px 28px 28px; border: 1px solid var(--line); border-radius: 8px; color: var(--ink); background: var(--surface); box-shadow: 0 20px 65px #00000033; text-align: center; }
+#about-dialog::backdrop { background: #19233466; }
+.about-close-form { position: absolute; top: 14px; right: 14px; margin: 0; }
+#about-close { width: 44px; height: 44px; border: 1px solid var(--line); border-radius: 50%; background: var(--surface); color: var(--muted); font-size: 22px; line-height: 1; }
+#about-close:hover { border-color: var(--blue); color: var(--ink); }
+.about-title { margin: 22px 0 8px; font-size: 32px; font-weight: 400; letter-spacing: .015em; line-height: 1.3; }
+.about-title strong { font-weight: 700; }
+.about-subtitle { margin: 0; font-size: 15px; line-height: 1.8; color: var(--muted); }
+.about-credit { margin: 32px 0 23px; font-size: 15px; color: var(--muted); }
+.about-credit strong { font-weight: 700; color: var(--ink); }
+.about-contact { display: inline-flex; align-items: center; justify-content: center; gap: 7px; min-height: 42px; padding: 8px 23px; border: 1px solid var(--line); border-radius: 6px; background: var(--surface); color: var(--muted); font-size: 14px; font-weight: 500; }
+.about-contact:hover { background: var(--field); border-color: var(--line-strong); color: var(--ink); }
+.about-copyright { margin: 32px 0 5px; font-size: 12px; line-height: 1.8; color: var(--muted); }
+.about-rights { margin: 0; font-size: 12px; line-height: 1.8; color: var(--muted); }
 
 .wordmark {
   display: inline-flex;

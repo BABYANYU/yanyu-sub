@@ -345,3 +345,21 @@ if (/iPhone|iPad|iPod/i.test(navigator.userAgent)) {
 } else if (/Windows/i.test(navigator.userAgent)) {
   form.querySelector('input[value="Mihomo"]').checked = true;
 }
+
+// About dialog. Native <dialog> handles Escape and focus restoration.
+const aboutDialog = document.getElementById('about-dialog');
+document.getElementById('about')?.addEventListener('click', () => {
+  if (aboutDialog && !aboutDialog.open && typeof aboutDialog.showModal === 'function') aboutDialog.showModal();
+});
+document.getElementById('about-close')?.addEventListener('click', (event) => {
+  event.preventDefault();
+  if (aboutDialog?.open) aboutDialog.close();
+});
+aboutDialog?.addEventListener('click', (event) => {
+  if (event.target !== aboutDialog) return;
+  const bounds = aboutDialog.getBoundingClientRect();
+  if (event.clientX < bounds.left || event.clientX > bounds.right ||
+      event.clientY < bounds.top || event.clientY > bounds.bottom) {
+    aboutDialog.close();
+  }
+});

@@ -56,4 +56,7 @@
   document.addEventListener('visibilitychange', () => {
     if (!document.hidden) apply();
   });
+  window.addEventListener('pageshow', (event) => {
+    if (event.persisted) apply();
+  });
 })();

@@ -192,7 +192,9 @@ test('markup stays compatible with the strict CSP the Worker sends', () => {
   assert.doesNotMatch(html, /\sstyle\s*=/i, 'style-src \'self\' forbids style attributes');
   assert.doesNotMatch(html, /\son[a-z]+\s*=/i, 'script-src \'self\' forbids inline handlers');
   for (const match of html.matchAll(/<script\b([^>]*)>/gi)) assert.match(match[1], /\bsrc=/, 'scripts must be external');
-  assert.doesNotMatch(html, /(?:src|href)\s*=\s*"https?:/i, 'no cross-origin subresource may be referenced');
+  assert.doesNotMatch(html, /\bsrc\s*=\s*"https?:/i, 'no cross-origin subresource may be loaded');
+  assert.doesNotMatch(html, /<link\b[^>]*\bhref\s*=\s*"https?:/i, 'no cross-origin stylesheet may be linked');
+  assert.match(html, /<a class="about-contact" href="https:\/\/t\.me\/[^"]+" target="_blank" rel="noopener noreferrer">/, 'external links must be navigation-only and isolated');
   assert.doesNotMatch(html, /javascript:/i);
   assert.doesNotMatch(css, /@import|url\(\s*['"]?https?:/i, 'CSP default-src \'self\' blocks remote CSS/fonts');
   // The module entry point must load through the same relative path the Worker serves.
@@ -361,4 +363,20 @@ test('day/night theme toggle and palette are wired without inline script', async
     assert.ok(theme.includes(token), `theme.js should handle ${token}`);
   }
   assert.doesNotMatch(theme, /<script|innerHTML/, 'theme.js must stay a plain external script');
+});
+test('about dialog mirrors the reference site and opens without inline script', () => {
+  assert.match(html, /id="about"/);
+  assert.match(html, /aria-haspopup="dialog"/);
+  assert.match(html, /<dialog id="about-dialog"/);
+  assert.match(html, /id="about-close"/);
+  assert.match(html, /class="about-title"[^>]*><strong>YANYU<\/strong> Sub/);
+  assert.match(html, /由 <strong>YANYU<\/strong> 设计与维护/);
+  assert.match(html, /https:\/\/t\.me\/\+88807915423/);
+  assert.match(html, /网站设计版权归 YANYU 所有/);
+  for (const rule of ['#about-dialog {', '#about-dialog::backdrop', '.about-title {', '.about-contact {', '.header-actions {']) {
+    assert.ok(css.includes(rule), `missing ${rule}`);
+  }
+  assert.match(app, /showModal\(\)/);
+  assert.match(app, /aboutDialog\.close\(\)/);
+  assert.match(app, /getBoundingClientRect\(\)/);
 });
