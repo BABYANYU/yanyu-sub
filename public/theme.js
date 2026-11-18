@@ -65,8 +65,9 @@
     const theme = resolve();
     document.documentElement.dataset.theme = theme;
     const meta = document.querySelector('meta[name="theme-color"]');
-    if (meta) meta.setAttribute('content', theme === 'dark' ? '#101010' : '#f5f5f3');
+    if (meta) meta.setAttribute('content', theme === 'dark' ? '#0d131d' : '#f6f8fb');
     if (button && label) {
+      button.setAttribute('data-mode', mode);
       label.textContent = labels[mode];
       const next = modes[(modes.indexOf(mode) + 1) % modes.length];
       button.setAttribute('aria-label', `当前主题：${labels[mode]}，切换至${labels[next]}`);
