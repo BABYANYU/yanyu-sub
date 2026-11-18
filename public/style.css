@@ -102,7 +102,6 @@ textarea:focus-visible { outline-offset: 1px; }
   border: 0;
   background: transparent;
   color: var(--muted);
-  font-size: 12px;
 }
 .theme-icon {
   display: none;
@@ -110,7 +109,7 @@ textarea:focus-visible { outline-offset: 1px; }
   height: 20px;
   fill: none;
   stroke: currentColor;
-  stroke-width: 1.6;
+  stroke-width: 1.9;
   stroke-linecap: round;
   stroke-linejoin: round;
 }
@@ -118,8 +117,7 @@ textarea:focus-visible { outline-offset: 1px; }
 [data-mode="light"] .theme-light,
 [data-mode="dark"] .theme-dark { display: block; }
 .theme-toggle:hover { color: var(--ink); }
-.header-actions { display: flex; align-items: center; gap: 6px; }
-/* 2 个汉字约 32px 宽，min-width 补足到 44px 的触摸目标。 */
+.header-actions { display: flex; align-items: center; gap: 4px; }
 .about-link {
   display: inline-flex;
   align-items: center;
@@ -129,10 +127,12 @@ textarea:focus-visible { outline-offset: 1px; }
   padding: 0 6px;
   border: 0;
   background: transparent;
-  color: var(--muted);
-  font-size: 12px;
+  color: var(--ink);
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 1.2;
 }
-.about-link:hover { color: var(--ink); }
+.about-link:hover { color: var(--focus); }
 
 #about-dialog { width: min(440px, calc(100% - 32px)); max-height: calc(100dvh - 48px); overflow: auto; padding: 30px 28px 28px; border: 1px solid var(--line); border-radius: 8px; color: var(--ink); background: var(--surface); box-shadow: 0 20px 65px #00000033; text-align: center; }
 #about-dialog::backdrop { background: #19233466; }
