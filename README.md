@@ -45,7 +45,7 @@
 任一步失败即中断，不会把未通过的版本上线。手动触发在 Actions 页运行 `Deploy`。
 
 `sub.fakeyou.eu.org` 的自定义域名绑定是 Cloudflare 侧的一次性配置，不随每次部署重建；部署令牌需要脚本上传权限（见下）。
-订阅短链依赖 KV 绑定 `CONFIGS`（namespace `e7205f12788c4a2098c538a230f8f915`），已写入 `wrangler.json` 与 `scripts/deployment.json`：namespace 必须先在部署账号里创建，且 `CF_API_TOKEN` 需要 **Workers KV Storage: Edit** 权限，否则部署会因绑定失败而中断（功能本身在未绑定时返回 503，不会退化上传）。
+订阅短链依赖 KV 绑定 `CONFIGS`（namespace `$KV_NAMESPACE_ID`），已写入 `wrangler.json` 与 `scripts/deployment.json`：namespace 必须先在部署账号里创建，且 `CF_API_TOKEN` 需要 **Workers KV Storage: Edit** 权限，否则部署会因绑定失败而中断（功能本身在未绑定时返回 503，不会退化上传）。
 如需迁移到新账号，先在 CF 绑定域名，再更新 `CF_ACCOUNT_ID` 与 `CF_API_TOKEN` 两个仓库密钥。
 
 回滚：`Deploy` 在上传前会记录当前线上版本，`verify-live.mjs` 失败时自动 `wrangler rollback` 回上一版并轮询 `/api/health` 确认恢复；也可以手动在 Actions 里对上一个成功提交重跑 `Deploy`，或本地 `npx wrangler rollback`。生产部署串行执行（同一 concurrency 组、不中途取消）、限时 15 分钟。

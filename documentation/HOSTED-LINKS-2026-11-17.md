@@ -44,7 +44,7 @@
 没有管理令牌时，撤销只能由维护者操作 KV：
 
 ```bash
-npx wrangler kv key delete 's:Ab3dE9kZ' --namespace-id e7205f12788c4a2098c538a230f8f915 --remote
+npx wrangler kv key delete 's:Ab3dE9kZ' --namespace-id $KV_NAMESPACE_ID --remote
 ```
 
 （key 名在代码中是 `s:<8 位 token>`；删除后该链接立即 404，无需重新部署。）
@@ -55,11 +55,11 @@ npx wrangler kv key delete 's:Ab3dE9kZ' --namespace-id e7205f12788c4a2098c538a23
 
 ```json
 "kv_namespaces": [
-  { "binding": "CONFIGS", "id": "e7205f12788c4a2098c538a230f8f915" }
+  { "binding": "CONFIGS", "id": "$KV_NAMESPACE_ID" }
 ]
 ```
 
-- 绑定名就是 Worker 里的 `env.CONFIGS`，namespace id 为 `e7205f12788c4a2098c538a230f8f915`。
+- 绑定名就是 Worker 里的 `env.CONFIGS`，namespace id 为 `$KV_NAMESPACE_ID`。
 - 该 namespace 必须在部署目标账号里已存在，否则 `wrangler deploy` 直接失败（不会自动创建）。
 - 部署令牌（`CF_API_TOKEN`）需要 **Workers KV Storage: Edit** 与 **Workers Scripts: Edit** 权限，否则绑定写入被拒；权限不足时表现为部署时报 “authentication error / unauthorized to access KV namespace”。
 - `name` / `main` / `compatibility_date` / `workers_dev` / `preview_urls` / `observability` 保持原值；`routes` 仍只写在 `scripts/deployment.json`（自定义域名是一次性配置），不要加回 `wrangler.json`。
