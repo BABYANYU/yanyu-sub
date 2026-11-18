@@ -152,9 +152,7 @@ textarea:focus-visible { outline-offset: 1px; }
 .about-title { margin: 22px 0 8px; font-size: 32px; font-weight: 400; letter-spacing: .015em; line-height: 1.3; }
 .about-title strong { font-weight: 700; }
 .about-subtitle { margin: 0; font-size: 15px; line-height: 1.8; color: var(--muted); }
-.about-credit { margin: 32px 0 23px; font-size: 15px; color: var(--muted); }
-.about-credit strong { font-weight: 700; color: var(--ink); }
-.about-contact { display: inline-flex; align-items: center; justify-content: center; gap: 7px; min-height: 44px; padding: 8px 23px; border: 1px solid var(--line); border-radius: 6px; background: var(--surface); color: var(--muted); font-size: 14px; font-weight: 500; }
+.about-contact { display: inline-flex; align-items: center; justify-content: center; gap: 7px; min-height: 44px; margin-top: 24px; padding: 8px 23px; border: 1px solid var(--line); border-radius: 6px; background: var(--surface); color: var(--muted); font-size: 14px; font-weight: 500; }
 .about-contact:hover { background: var(--field); border-color: var(--line-strong); color: var(--ink); }
 .about-copyright { margin: 32px 0 5px; font-size: 12px; line-height: 1.8; color: var(--muted); }
 .about-rights { margin: 0; font-size: 12px; line-height: 1.8; color: var(--muted); }

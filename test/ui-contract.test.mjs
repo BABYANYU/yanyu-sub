@@ -377,7 +377,6 @@ test('about dialog mirrors the reference site and opens without inline script', 
   assert.match(html, /<dialog id="about-dialog"/);
   assert.match(html, /id="about-close"/);
   assert.match(html, /class="about-title"[^>]*><strong>YANYU<\/strong> Sub/);
-  assert.match(html, /由 <strong>YANYU<\/strong> 设计与维护/);
   assert.match(html, /https:\/\/t\.me\/\+88807915423/);
   assert.match(html, /网站设计版权归 YANYU 所有/);
   for (const rule of ['#about-dialog {', '#about-dialog::backdrop', '.about-title {', '.about-contact {', '.header-actions {']) {
