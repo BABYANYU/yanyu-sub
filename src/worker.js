@@ -23,17 +23,17 @@ function bucket(map,host,{quota,window,cap}){
  map.set(host,{start:Date.now(),n:1});
  return 1<=quota;
 }
-const RATE_WINDOW=60000, RATE_QUOTA=10, RATE_MAX_BUCKETS=20000;
+const RATE_WINDOW=60000, RATE_QUOTA=20, RATE_MAX_BUCKETS=20000;
 function limited(host){
  const now=Date.now();if(now-lastPrune>RATE_WINDOW){prune(rate,RATE_WINDOW,now);lastPrune=now}
  return bucket(rate,host,{quota:RATE_QUOTA,window:RATE_WINDOW,cap:RATE_MAX_BUCKETS});
 }
 // Short subscription hosting (POST /api/publish, GET|HEAD /s/:token, DELETE /api/publish/:token).
 // Publishing writes durable state, so it gets its own, much smaller bucket than /api/fetch:
-// 5 requests per 10 minutes per CF-Connecting-IP, counted for publish and revoke together.
+// 15 requests per 5 minutes per CF-Connecting-IP, counted for publish and revoke together.
 const PUBLISH_MAX=2*1024*1024;
-const PUBLISH_WINDOW=10*60*1000;
-const PUBLISH_QUOTA=5;
+const PUBLISH_WINDOW=5*60*1000;
+const PUBLISH_QUOTA=15;
 const PUBLISH_ATTEMPTS=5;
 // Publishing writes durable state for a small number of callers, so this table is
 // capped far lower than the read-only /api/fetch one.

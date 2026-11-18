@@ -1,7 +1,7 @@
 // Short subscription hosting contract: POST /api/publish, GET|HEAD /s/:token and
 // DELETE /api/publish/:token. The KV binding (CONFIGS) is replaced with an in-memory
 // Map so the suite runs offline and can inspect what would be written. Every test
-// uses its own CF-Connecting-IP because the publish bucket allows 5 per 10 minutes.
+// uses its own CF-Connecting-IP because the publish bucket allows 15 per 5 minutes.
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import worker from '../src/worker.js';
@@ -375,15 +375,15 @@ test('revoke answers 404 for unknown or malformed tokens and 405 for other metho
   assert.equal(wrongMethod.headers.get('allow'), 'DELETE');
 });
 
-test('publish and revoke share a 5-per-10-minute bucket per client address', async () => {
+test('publish and revoke share a 15-per-5-minute bucket per client address', async () => {
   const ip = '203.0.113.200';
   const CONFIGS = memoryKV();
   const statuses = [];
-  for (let i = 0; i < 7; i += 1) {
+  for (let i = 0; i < 17; i += 1) {
     statuses.push((await worker.fetch(publish({content, target: 'Surge'}, {'CF-Connecting-IP': ip}), {CONFIGS})).status);
   }
-  assert.deepEqual(statuses, [200, 200, 200, 200, 200, 429, 429]);
-  assert.equal(CONFIGS.puts.length, 5, 'rejected requests must not be stored');
+  assert.deepEqual(statuses, [...Array(15).fill(200), 429, 429]);
+  assert.equal(CONFIGS.puts.length, 15, 'rejected requests must not be stored');
 
   // Revoke draws from the same bucket, so the same address stays blocked.
   const published = JSON.parse(CONFIGS.puts[0].value);
@@ -397,7 +397,7 @@ test('publish and revoke share a 5-per-10-minute bucket per client address', asy
   const other = await worker.fetch(publish({content, target: 'Surge'}, {'CF-Connecting-IP': '203.0.113.201'}), {CONFIGS});
   assert.equal(other.status, 200);
 
-  // The /api/fetch quota (10/min) is a separate bucket and stays unaffected.
+  // The /api/fetch quota (20/min) is a separate bucket and stays unaffected.
   const fetchStatuses = [];
   for (let i = 0; i < 3; i += 1) {
     const request = new Request(ORIGIN + '/api/fetch', {

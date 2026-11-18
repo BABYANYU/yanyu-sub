@@ -15,7 +15,7 @@
 - `target` 只接受 `Surge` / `Mihomo`；空配置、非法 UTF-8、超 2 MiB 均拒绝。
 - `ttlSeconds` **可选**：省略即永久；显式传入时只接受 `3600`、`86400`、`604800`、`2592000`，其它值（含 `null`、字符串、小数）返回 400，不做静默夹取或截断。
 - 永久链接的 KV 写入不带 `expirationTtl`，记录里 `expiresAt` 为 `null`；这类链接不会自动失效，撤销（`DELETE`）是唯一的下线方式。
-- `POST /api/publish` 与 `DELETE` 共用同一限流桶：每 IP 每 10 分钟 5 次（`/api/fetch` 仍是每分钟 10 次，互不影响）。
+- `POST /api/publish` 与 `DELETE` 共用同一限流桶：每 IP 每 5 分钟 15 次（`/api/fetch` 单独限制为每分钟 20 次）。
 - `POST`/`DELETE` 要求同源 `Origin` 且 JSON 请求头，跨源 403，且限流在校验之后（跨源请求不消耗配额）。
 - 未绑定 KV 时返回 503「短链接服务未配置」，不会静默退化为一次性下载。
 

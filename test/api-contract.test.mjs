@@ -255,16 +255,16 @@ test('SKIP_DNS_PREFLIGHT accepts both true and "true" and skips DoH', async () =
   }
 });
 
-test('per-IP quota rejects the 11th request inside a minute', async () => {
+test('per-IP quota rejects the 21st request inside a minute', async () => {
   const ip = '198.51.100.61';
   const statuses = [];
-  for (let i = 0; i < 12; i += 1) {
+  for (let i = 0; i < 22; i += 1) {
     const {result} = await withFetch(() => ok('trojan://a@node.example.com:443#n'), () =>
       worker.fetch(post({url: 'https://subscription.example.org/sub'}, {'CF-Connecting-IP': ip}), skipDns));
     statuses.push(result.status);
   }
-  assert.deepEqual(statuses.slice(0, 10), Array(10).fill(200));
-  assert.deepEqual(statuses.slice(10), [429, 429]);
+  assert.deepEqual(statuses.slice(0, 20), Array(20).fill(200));
+  assert.deepEqual(statuses.slice(20), [429, 429]);
 });
 
 // Rejected cross-origin traffic must not burn the visitor's conversion quota.
@@ -395,7 +395,7 @@ test('every response path carries the hardened header set and a CSP', async () =
 test('no /api response ever grants CORS, so a foreign page cannot read a body', async () => {
   const ip = '203.0.113.231';
   const statuses = [];
-  for (let i = 0; i < 11; i += 1) {
+  for (let i = 0; i < 21; i += 1) {
     const {result} = await withFetch(() => ok('trojan://a@node.example.com:443#n'), () =>
       worker.fetch(post({url: 'https://subscription.example.org/sub'}, {'CF-Connecting-IP': ip}), skipDns));
     statuses.push(result);

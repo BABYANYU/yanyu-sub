@@ -11,6 +11,7 @@ const publishedBlock = $('#published');
 const publishedUrl = $('#published-url');
 const copyPublished = $('#copy-published');
 const revokePublished = $('#revoke-published');
+const configPreview = $('#config-preview');
 // Same envelope the converter and the Worker enforce; checked before any request.
 const MAX_URL_LENGTH = 8192;
 const CONVERT_TIMEOUT_MS = 90000;
@@ -52,6 +53,8 @@ function resetPublication(message = '') {
   revoking = false;
   publishedBlock.hidden = true;
   resultPanel.hidden = true;
+  configPreview.value = '';
+  configPreview.closest('details').open = false;
   publishedUrl.value = '';
   copyPublished.disabled = true;
   revokePublished.disabled = true;
@@ -200,6 +203,7 @@ async function publishLink(current, requestRevision) {
     }
     publication = { url, manageToken };
     publishedUrl.value = url;
+    configPreview.value = current.content;
     publishedBlock.hidden = false;
     copyPublished.disabled = false;
     revokePublished.disabled = false;

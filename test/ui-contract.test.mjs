@@ -137,10 +137,14 @@ test('failures stay inline: alert panel for input, status line after conversion'
   assert.doesNotMatch(app, /outerHTML|insertAdjacentHTML|document\.write|\beval\s*\(|new\s+Function\s*\(/);
 });
 
-test('the result omits the profile preview and hides when the link is cleared', () => {
-  assert.doesNotMatch(html, /查看配置|config-preview/);
-  assert.doesNotMatch(app, /config-preview|configPreview/);
-  assert.match(functionBody(app, 'resetPublication'), /resultPanel\.hidden = true;/);
+test('the result shows a collapsed read-only preview for the published configuration', () => {
+  const details = html.match(/<details class="preview">([\s\S]*?)<\/details>/)?.[1] || '';
+  assert.match(details, /<summary>查看配置<\/summary>/);
+  assert.match(details, /<textarea[^>]*id="config-preview"[^>]*readonly/);
+  assert.match(app, /configPreview\.value = current\.content;/);
+  const reset = functionBody(app, 'resetPublication');
+  assert.match(reset, /resultPanel\.hidden = true;/);
+  assert.match(reset, /configPreview\.value = '';/);
 });
 
 test('the source area is a single textarea wired to the converter', () => {
