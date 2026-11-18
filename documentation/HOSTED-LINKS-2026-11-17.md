@@ -26,7 +26,7 @@
 - 不要把链接贴到公开群组、issue、截图或日志里；泄露后请立刻撤销。
 - 链接不写入 URL 之外的任何地方：不上 cookie、不上 localStorage、不进 Worker 日志（`observability.enabled` 仍为 `false`）。
 - 管理令牌（`manageToken`，32 字节随机数的十六进制）只在生成时返回一次，页面仅保存在内存中，刷新即失。丢失令牌就无法撤销；**永久链接没有到期兜底**，这时只能请维护者从 KV 删除对应 `s:<token>` 记录。
-- 服务端只保存管理令牌的 **SHA-256 哈希**（`manageHash`），并以定长时间比较；KV 被读也无法还原令牌。KV 记录的字段只有 `content`、`target`、`createdAt`、`expiresAt`（永久链接为 `null`）、`manageHash` —— 即配置文本 + 元数据 + 令牌哈希，没有 IP、UA、来源 URL 或账号信息。
+- 服务端只保存管理令牌的 **SHA-256 哈希**（`manageHash`），并以定长时间比较；KV 被读也无法还原令牌。KV 记录的字段为 `content`、`target`、`createdAt`、`expiresAt`（永久链接为 `null`）、`manageHash`、`ownerHash` —— 即配置文本 + 元数据 + 令牌哈希 + IP 的 SHA-256；没有原始 IP、UA、来源 URL 或账号信息。每个地址最多 50 条存活链接，另维护 30 天过期的 `own:<ownerHash>` 计数键。
 - `GET /s/<token>` 的响应带 `Cache-Control: private, no-store`、`nosniff`、`Referrer-Policy: no-referrer`、`X-Robots-Tag: noindex, nofollow`；非 8 位 token 一律 404，不回显路径、不做目录探测。
 - token 用 `crypto.getRandomValues` 拒绝采样生成（跳过 256/62 的偏置），并在写入前检查是否已存在，避免枚举命中。
 
