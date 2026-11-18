@@ -109,10 +109,10 @@ test('the publish request body carries content and target only', () => {
   assert.match(app, /error\?\.name === 'TimeoutError'/);
 });
 
-test('the success status is concise and preserves conversion warnings', () => {
-  assert.match(app, /const PUBLISH_DONE = '订阅链接已生成。';/);
+test('a successful publish clears the status unless there are conversion warnings', () => {
+  assert.doesNotMatch(app, /订阅链接已生成/);
   assert.doesNotMatch(html, /链接默认永久有效/);
-  assert.match(app, /publishStatus\.textContent = current\.hasWarnings[\s\S]{0,120}PUBLISH_DONE[\s\S]{0,80}: PUBLISH_DONE;/);
+  assert.match(app, /publishStatus\.textContent = current\.hasWarnings[\s\S]{0,120}未完整转换[\s\S]{0,80}: '';/);
   // Both intermediate stages are announced with the requested wording.
   assert.match(app, /publishStatus\.textContent = '正在生成配置…';/);
   assert.match(app, /publishStatus\.textContent = '正在生成订阅链接…';/);
@@ -137,13 +137,10 @@ test('failures stay inline: alert panel for input, status line after conversion'
   assert.doesNotMatch(app, /outerHTML|insertAdjacentHTML|document\.write|\beval\s*\(|new\s+Function\s*\(/);
 });
 
-test('no #config-preview is left behind: the profile stays behind a collapsed details', () => {
-  const details = html.match(/<details class="preview">([\s\S]*?)<\/details>/)?.[1] || '';
-  assert.ok(details, 'the preview must stay a <details> so the page stays minimal');
-  assert.match(details, /<summary>查看配置<\/summary>/);
-  assert.match(details, /<textarea[^>]*id="config-preview"[^>]*readonly/);
-  assert.match(app, /\$\('#config-preview'\)/);
-  assert.match(app, /configPreview\.value = converted\.content;/);
+test('the result omits the profile preview and hides when the link is cleared', () => {
+  assert.doesNotMatch(html, /查看配置|config-preview/);
+  assert.doesNotMatch(app, /config-preview|configPreview/);
+  assert.match(functionBody(app, 'resetPublication'), /resultPanel\.hidden = true;/);
 });
 
 test('the source area is a single textarea wired to the converter', () => {
@@ -316,7 +313,6 @@ test('revoking addresses the short token and keeps the manage token in a header'
 test('an edited source, a format switch or a new publish clears the old link', () => {
   const invalidateBody = functionBody(app, 'invalidate');
   assert.match(invalidateBody, /resetPublication\(\)/, 'invalidate() must drop the published link and token');
-  assert.match(invalidateBody, /resultPanel\.hidden = true/, 'the link panel must collapse again');
   const resetBody = functionBody(app, 'resetPublication');
   assert.match(resetBody, /publication = null/, 'the manage token must not outlive a reset');
   assert.match(resetBody, /publishedBlock\.hidden = true/, 'the link block must be hidden again');

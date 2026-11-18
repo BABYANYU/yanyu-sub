@@ -11,13 +11,10 @@ const publishedBlock = $('#published');
 const publishedUrl = $('#published-url');
 const copyPublished = $('#copy-published');
 const revokePublished = $('#revoke-published');
-const configPreview = $('#config-preview');
 // Same envelope the converter and the Worker enforce; checked before any request.
 const MAX_URL_LENGTH = 8192;
 const CONVERT_TIMEOUT_MS = 90000;
 const PUBLISH_TIMEOUT_MS = 30000;
-// Hosted links are permanent: the client never asks for a shorter lifetime.
-const PUBLISH_DONE = '订阅链接已生成。';
 // Exact test used by convertSources() in converter.js to treat a source as a link.
 const URL_INPUT = /^https?:\/\/[^\s]+$/;
 const URL_LINE = /^https?:\/\/\S+$/i;
@@ -54,6 +51,7 @@ function resetPublication(message = '') {
   publication = null;
   revoking = false;
   publishedBlock.hidden = true;
+  resultPanel.hidden = true;
   publishedUrl.value = '';
   copyPublished.disabled = true;
   revokePublished.disabled = true;
@@ -99,8 +97,6 @@ function invalidate(unchanged = false) {
   const hadResult = result !== null;
   result = null;
   resetPublication();
-  resultPanel.hidden = true;
-  configPreview.value = '';
   errorPanel.hidden = true;
   if (hadResult || running) publishStatus.textContent = '内容已更改，请重新生成。';
   else publishStatus.textContent = '';
@@ -209,8 +205,8 @@ async function publishLink(current, requestRevision) {
     revokePublished.disabled = false;
     resultPanel.hidden = false;
     publishStatus.textContent = current.hasWarnings
-      ? `${PUBLISH_DONE}另有 ${current.warningCount} 项内容未完整转换，请检查原始订阅。`
-      : PUBLISH_DONE;
+      ? `${current.warningCount} 项内容未完整转换，请检查原始订阅。`
+      : '';
     resultPanel.focus();
     return true;
   } catch (error) {
@@ -268,7 +264,6 @@ form.addEventListener('submit', async (event) => {
       hasWarnings: warnings.length > 0,
       warningCount: warnings.length,
     };
-    configPreview.value = converted.content;
     // Conversion succeeded: hand the profile straight to the short-link service.
     publishStatus.textContent = '正在生成订阅链接…';
     await publishLink(result, requestRevision);
