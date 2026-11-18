@@ -2,13 +2,32 @@ import assets from './assets.generated.js';
 import buildInfo from './build-info.generated.js';
 import {validateResolvedSource} from './source-policy.js';
 const LIMIT=1024*1024;
-const secure={'Cache-Control':'private, no-store','X-Content-Type-Options':'nosniff','Referrer-Policy':'no-referrer','X-Frame-Options':'DENY','Permissions-Policy':'camera=(), microphone=(), geolocation=()'};
+// JSON and short-link responses are never rendered as documents, but they travel
+// through the same edge as the UI: ship the restrictive CSP there as well so a
+// 404/405/429/503 on any route still carries the full header set.
+const CSP_API="default-src 'none'; frame-ancestors 'none'; base-uri 'none'";
+const secure={'Cache-Control':'private, no-store','X-Content-Type-Options':'nosniff','Referrer-Policy':'no-referrer','X-Frame-Options':'DENY','Permissions-Policy':'camera=(), microphone=(), geolocation=()','Content-Security-Policy':CSP_API};
 const rate=new Map();
 let lastPrune=0;
 function json(body,status=200,extra={}){return Response.json(body,{status,headers:{...secure,...extra}});}
 // Cloudflare rejects timers and I/O in the global scope, so prune lazily per request.
-function prune(now){for(const [host,x]of rate)if(now-x.start>60000)rate.delete(host);lastPrune=now}
-function limited(host){const now=Date.now();if(now-lastPrune>60000)prune(now);const x=rate.get(host)||{start:now,n:0};if(now-x.start>=60000){x.start=now;x.n=0}x.n++;rate.set(host,x);return x.n<=10}
+function prune(map,window,now){for(const [host,x]of map)if(now-x.start>window)map.delete(host);}
+// Buckets are keyed by client address, and an isolate only holds a fixed slice of
+// memory, so the table is capped. Once a table is full an unknown address fails
+// closed (429) instead of growing the map; keeping live buckets on eviction would
+// hand an attacker a way to reset other callers' quotas.
+function bucket(map,host,{quota,window,cap}){
+ const x=map.get(host);
+ if(x&&Date.now()-x.start<window){x.n+=1;return x.n<=quota}
+ if(!x&&map.size>=cap)return false;
+ map.set(host,{start:Date.now(),n:1});
+ return 1<=quota;
+}
+const RATE_WINDOW=60000, RATE_QUOTA=10, RATE_MAX_BUCKETS=20000;
+function limited(host){
+ const now=Date.now();if(now-lastPrune>RATE_WINDOW){prune(rate,RATE_WINDOW,now);lastPrune=now}
+ return bucket(rate,host,{quota:RATE_QUOTA,window:RATE_WINDOW,cap:RATE_MAX_BUCKETS});
+}
 // Short subscription hosting (POST /api/publish, GET|HEAD /s/:token, DELETE /api/publish/:token).
 // Publishing writes durable state, so it gets its own, much smaller bucket than /api/fetch:
 // 5 requests per 10 minutes per CF-Connecting-IP, counted for publish and revoke together.
@@ -16,6 +35,9 @@ const PUBLISH_MAX=2*1024*1024;
 const PUBLISH_WINDOW=10*60*1000;
 const PUBLISH_QUOTA=5;
 const PUBLISH_ATTEMPTS=5;
+// Publishing writes durable state for a small number of callers, so this table is
+// capped far lower than the read-only /api/fetch one.
+const PUBLISH_MAX_BUCKETS=1000;
 // Short links are permanent unless the caller explicitly asks for a TTL; the legacy
 // values stay accepted so an older UI (or a script) that still sends ttlSeconds keeps
 // working, but omitting the field means "never expires" and skips expirationTtl.
@@ -25,7 +47,7 @@ const TOKEN=/^[A-Za-z0-9]{8}$/;
 const ALPHABET='ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
 const publishRate=new Map();
 let lastPublishPrune=0;
-function publishLimited(host){const now=Date.now();if(now-lastPublishPrune>PUBLISH_WINDOW){for(const[h,x]of publishRate)if(now-x.start>PUBLISH_WINDOW)publishRate.delete(h);lastPublishPrune=now}const x=publishRate.get(host)||{start:now,n:0};if(now-x.start>=PUBLISH_WINDOW){x.start=now;x.n=0}x.n++;publishRate.set(host,x);return x.n<=PUBLISH_QUOTA}
+function publishLimited(host){const now=Date.now();if(now-lastPublishPrune>PUBLISH_WINDOW){prune(publishRate,PUBLISH_WINDOW,now);lastPublishPrune=now}return bucket(publishRate,host,{quota:PUBLISH_QUOTA,window:PUBLISH_WINDOW,cap:PUBLISH_MAX_BUCKETS})}
 // 256 is not a multiple of 62, so bytes >= limit are rejected rather than folded in.
 function randomToken(){const limit=Math.floor(256/ALPHABET.length)*ALPHABET.length;let out='';while(out.length<8){const buf=new Uint8Array(8);crypto.getRandomValues(buf);for(const b of buf){if(b<limit&&out.length<8)out+=ALPHABET[b%ALPHABET.length]}}return out}
 function randomHex(bytes){const buf=new Uint8Array(bytes);crypto.getRandomValues(buf);let out='';for(const b of buf)out+=b.toString(16).padStart(2,'0');return out}
@@ -93,49 +115,22 @@ async function serveShort(request,env,url){
   const expiry=Date.parse(record.expiresAt);
   if(Number.isFinite(expiry)&&expiry<=Date.now())return shortText(SHORT_MISSING,404);
  }
- const headers={'Content-Type':'text/plain; charset=utf-8','Cache-Control':'private, no-store','X-Content-Type-Options':'nosniff','Referrer-Policy':'no-referrer','X-Robots-Tag':'noindex, nofollow'};
+ const headers={'Content-Type':'text/plain; charset=utf-8','Cache-Control':'private, no-store','X-Content-Type-Options':'nosniff','Referrer-Policy':'no-referrer','X-Frame-Options':'DENY','X-Robots-Tag':'noindex, nofollow','Content-Security-Policy':CSP_API};
  return new Response(request.method==='HEAD'?null:record.content,{status:200,headers});
-}
-// Compatibility shim: the shipped UI currently puts the 64-hex manage token in the
-// DELETE path instead of the short token. Resolving that alias needs a bounded scan,
-// so it is only allowed when the header carries exactly the same value. Callers that
-// use /api/publish/<short token> never reach this path.
-async function tokenForManageToken(kv,manageToken){
- if(typeof kv.list!=='function')return '';
- const target=await sha256Hex(manageToken);
- let cursor;
- for(let page=0;page<2;page+=1){
-  const listed=await kv.list({prefix:'s:',limit:100,...(cursor?{cursor}:{})});
-  for(const entry of Array.isArray(listed?.keys)?listed.keys:[]){
-   const name=typeof entry==='string'?entry:entry?.name;
-   if(typeof name!=='string'||!TOKEN.test(name.slice(2)))continue;
-   let record;
-   try{record=JSON.parse(await kv.get(name))}catch{continue}
-   if(record&&typeof record.manageHash==='string'&&equalHex(target,record.manageHash.toLowerCase()))return name.slice(2);
-  }
-  if(!listed||listed.list_complete!==false||typeof listed.cursor!=='string'||!listed.cursor)break;
-  cursor=listed.cursor;
- }
- return '';
 }
 async function revokeShort(request,env,url,pathToken){
  if(request.method!=='DELETE')return shortText('请求方法不受支持',405,{Allow:'DELETE'});
  if(request.headers.get('Origin')!==url.origin)return shortText('请求来源不匹配',403);
  // Validate the path shape before touching storage so a malformed URL is a plain
  // 404 and never reveals whether the hosting backend is configured.
- let token=pathToken;
- let alias=null;
- if(!TOKEN.test(token)){
-  const header=request.headers.get('X-Manage-Token')||'';
-  if(!/^[0-9a-f]{64}$/.test(token)||header!==token)return shortText(SHORT_MISSING,404);
-  alias=header;
- }
+ // Only the short token addresses a record. A 64-hex manage token in the path (the
+ // shape an older UI produced) is a plain 404: accepting it would need a KV list
+ // scan per request and would let the secret alone revoke, without proving the
+ // caller also holds the short link.
+ const token=pathToken;
+ if(!TOKEN.test(token))return shortText(SHORT_MISSING,404);
  const kv=binding(env);if(!kv)return shortText('短链接服务未配置',503);
  const ip=request.headers.get('CF-Connecting-IP')||'unknown';if(!publishLimited(ip))return shortText('请求过于频繁，请稍后重试',429);
- if(alias){
-  try{token=await tokenForManageToken(kv,alias)}catch{return shortText(SHORT_DOWN,503)}
-  if(!token)return shortText(SHORT_MISSING,404);
- }
  let raw;
  try{raw=await kv.get('s:'+token)}catch{return shortText(SHORT_DOWN,503)}
  if(raw===null||raw===undefined)return shortText(SHORT_MISSING,404);
@@ -147,7 +142,7 @@ async function revokeShort(request,env,url,pathToken){
  try{digest=await sha256Hex(provided)}catch{return shortText(SHORT_DOWN,503)}
  if(!equalHex(digest,record.manageHash.toLowerCase()))return shortText('管理令牌无效',403);
  try{await kv.delete('s:'+token)}catch{return shortText('撤销失败，请稍后重试',503)}
- return new Response(null,{status:204,headers:{'Cache-Control':'private, no-store','X-Content-Type-Options':'nosniff','Referrer-Policy':'no-referrer'}});
+ return new Response(null,{status:204,headers:secure});
 }
 export function validateSource(value,ownHost){
  if(typeof value!=='string'||value.length>8192||/[\u0000-\u0020\\]/u.test(value))throw Error('URL');
@@ -179,7 +174,11 @@ export default {async fetch(request,env){
    try{
     const response=await fetch(source.href,{method:'GET',redirect:'manual',signal:controller.signal,headers:{'User-Agent':'Surge/6.0 YanyuSub/1.0','Accept':'text/plain, application/yaml, application/json, */*'},cache:'no-store'});
     if(!response.ok)return json({message:response.status>=300&&response.status<400?'订阅链接发生跳转，请填写最终的 HTTPS 地址':'订阅源暂时未返回可用内容'},422);
-    const body=await limitedText(response);if(/^\s*<(?:!doctype|html)/i.test(body))return json({message:'来源返回了网页，请检查是否填写订阅链接'},422);
+    const body=await limitedText(response);
+    // A 200 with no content is not a subscription: returning it as success makes the
+    // UI report a "please paste your subscription" error for a link the user did enter.
+    if(!body.trim())return json({message:'订阅源暂时未返回可用内容'},422);
+    if(/^\s*<(?:!doctype|html)/i.test(body))return json({message:'来源返回了网页，请检查是否填写订阅链接'},422);
     return json({text:body});
    }finally{clearTimeout(timer)}
   }catch(error){return json({message:error?.message==='SIZE'?'订阅内容超过 1 MiB':error?.message==='SOURCE_DENIED'?'订阅地址未通过网络策略检查':'订阅读取失败，请检查 HTTPS 链接或粘贴订阅内容'},error?.message==='SIZE'?413:422)}

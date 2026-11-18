@@ -24,6 +24,9 @@ const URL_LINE = /^https?:\/\/\S+$/i;
 let revision = 0;
 let running = false;
 let result = null;
+// The source text the current result/link was produced from, so an input event that
+// leaves the text unchanged (a typo the user undid) does not destroy the manage token.
+let submittedText = '';
 // Live publication for the current result: {url, manageToken}.
 // The manage token is deliberately memory-only — never a cookie, never storage.
 let publication = null;
@@ -77,7 +80,8 @@ async function readBody(response) {
 // Server messages are shown, but scrubbed: neither the profile nor the manage token
 // may end up in visible text.
 function publishErrorText(status, message) {
-  if (typeof message === 'string' && message.trim()) return cleanDiagnostic(message);
+  if (status < 500 && typeof message === 'string' && message.trim()) return cleanDiagnostic(message);
+  // 5xx bodies may echo upstream internals, so they never reach the page.
   if (status === 403) return '请求来源校验失败，请刷新页面后重试。';
   if (status === 413) return '配置过大，无法生成订阅链接。';
   if (status === 429) return '生成太频繁，请稍后再试。';
@@ -85,7 +89,12 @@ function publishErrorText(status, message) {
   return '生成订阅链接失败，请稍后重试。';
 }
 
-function invalidate() {
+function invalidate(unchanged = false) {
+  if (unchanged && !running) {
+    // Nothing to discard: the text still matches what produced the current link.
+    errorPanel.hidden = true;
+    return;
+  }
   revision += 1;
   const hadResult = result !== null;
   result = null;
@@ -170,11 +179,15 @@ function withTimeout(promise, ms) {
 
 // POST the converted profile and adopt the hosted link. Resolves true on success.
 async function publishLink(current, requestRevision) {
+  // A request that outlives the 30s budget is aborted instead of being left to
+  // resolve into a page that has already reported failure.
+  const controller = new AbortController();
   try {
     const response = await withTimeout(fetch('/api/publish', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ content: current.content, target: current.target }),
+      signal: controller.signal,
     }), PUBLISH_TIMEOUT_MS);
     if (requestRevision !== revision) return false;
     const data = await readBody(response);
@@ -201,6 +214,7 @@ async function publishLink(current, requestRevision) {
     resultPanel.focus();
     return true;
   } catch (error) {
+    controller.abort();
     if (requestRevision !== revision) return false;
     publishStatus.textContent = error?.name === 'TimeoutError'
       ? `生成订阅链接超过 ${Math.round(PUBLISH_TIMEOUT_MS / 1000)} 秒未完成，请检查网络后重试。`
@@ -211,7 +225,7 @@ async function publishLink(current, requestRevision) {
 
 sourceInput.addEventListener('input', () => {
   sourceInput.removeAttribute('aria-invalid');
-  invalidate();
+  invalidate(sourceInput.value.trim() === submittedText);
 });
 
 form.querySelectorAll('input[name="target"]').forEach((input) => input.addEventListener('change', invalidate));
@@ -234,6 +248,7 @@ form.addEventListener('submit', async (event) => {
     showError('请选择输出格式：Surge 或 Mihomo。');
     return;
   }
+  submittedText = text;
   invalidate();
   const requestRevision = revision;
   setRunning(true);
@@ -308,12 +323,14 @@ revokePublished.addEventListener('click', async () => {
   revokePublished.disabled = true;
   revokePublished.setAttribute('aria-busy', 'true');
   publishStatus.textContent = '正在撤销链接…';
+  const controller = new AbortController();
   try {
     // Revoke by the short token from the URL; the manage token stays in the header.
     const shortToken = current.url.split('/').pop();
     const response = await withTimeout(fetch(`/api/publish/${encodeURIComponent(shortToken)}`, {
       method: 'DELETE',
       headers: { 'X-Manage-Token': current.manageToken },
+      signal: controller.signal,
     }), PUBLISH_TIMEOUT_MS);
     if (publication !== current) return;
     // 404/410 mean the link is already gone, which is the outcome the user wanted.
@@ -325,17 +342,20 @@ revokePublished.addEventListener('click', async () => {
     }
     resetPublication('订阅链接已撤销，该网址已失效。');
   } catch (error) {
+    controller.abort();
     if (publication !== current) return;
     publishStatus.textContent = error?.name === 'TimeoutError'
       ? '撤销请求超时，请稍后重试。'
       : '撤销失败，请检查网络后重试。';
   } finally {
+    // The submit button is re-armed unconditionally: after a successful revoke
+    // publication is null, and a guarded re-arm would leave it disabled for good.
+    revoking = false;
+    publishButton.disabled = running;
     if (publication === current) {
-      revoking = false;
       revokePublished.removeAttribute('aria-busy');
       copyPublished.disabled = false;
       revokePublished.disabled = false;
-      publishButton.disabled = running;
     }
   }
 });
@@ -346,14 +366,17 @@ if (/iPhone|iPad|iPod/i.test(navigator.userAgent)) {
   form.querySelector('input[value="Mihomo"]').checked = true;
 }
 
-// About dialog. Native <dialog> handles Escape and focus restoration.
+// About dialog. Native <dialog> handles Escape and the focus trap; the close button is
+// a submit inside <form method="dialog">, so it also works when this module never runs.
 const aboutDialog = document.getElementById('about-dialog');
-document.getElementById('about')?.addEventListener('click', () => {
+const aboutTrigger = document.getElementById('about');
+aboutTrigger?.addEventListener('click', () => {
   if (aboutDialog && !aboutDialog.open && typeof aboutDialog.showModal === 'function') aboutDialog.showModal();
 });
-document.getElementById('about-close')?.addEventListener('click', (event) => {
-  event.preventDefault();
-  if (aboutDialog?.open) aboutDialog.close();
+// Touch browsers do not focus the button they activate, so the native focus return
+// after close() can land on <body>; send it back to 关于 explicitly.
+aboutDialog?.addEventListener('close', () => {
+  if (aboutTrigger && (document.activeElement === null || document.activeElement === document.body)) aboutTrigger.focus();
 });
 aboutDialog?.addEventListener('click', (event) => {
   if (event.target !== aboutDialog) return;

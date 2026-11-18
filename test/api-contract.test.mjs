@@ -362,3 +362,58 @@ test('short-link errors are generic and never reflect the requested path', async
   assert.equal(revoke.status, 404);
   assert.doesNotMatch(await revoke.text(), /worker\.js|\.\.|kv|CONFIGS/i);
 });
+
+// Every answer on the shared origin — including 404/405/429/503 and the short-link
+// routes — must carry the hardened header set, not just the static pages.
+test('every response path carries the hardened header set and a CSP', async () => {
+  const routes = [
+    ['GET', '/api/health', {}],
+    ['POST', '/api/fetch', {}],
+    ['GET', '/api/nope', {}],
+    ['GET', '/nope', {}],
+    ['GET', '/s/AbCd1234', {}],
+    ['GET', '/s/nope', {}],
+    ['POST', '/api/publish', {}],
+    ['DELETE', '/api/publish/nope', {}],
+    ['GET', '/', {}],
+  ];
+  for (const [method, path, env] of routes) {
+    const response = await worker.fetch(new Request(ORIGIN + path, {method}), env);
+    const label = `${method} ${path} -> ${response.status}`;
+    assert.equal(response.headers.get('x-content-type-options'), 'nosniff', label);
+    assert.match(response.headers.get('cache-control') || '', /private, no-store/, label);
+    assert.equal(response.headers.get('referrer-policy'), 'no-referrer', label);
+    assert.equal(response.headers.get('x-frame-options'), 'DENY', label);
+    assert.match(response.headers.get('content-security-policy') || '', /default-src 'none'|default-src 'self'/, label);
+    assert.ok((response.headers.get('content-security-policy') || '').includes("frame-ancestors 'none'"), label);
+    assert.equal(response.headers.get('access-control-allow-origin'), null, `${label} must not open CORS`);
+  }
+});
+
+// A 429 or a 404 must never be usable as a cross-site read: without an ACAO header a
+// browser cannot expose the body even if a request slips past the Origin check.
+test('no /api response ever grants CORS, so a foreign page cannot read a body', async () => {
+  const ip = '203.0.113.231';
+  const statuses = [];
+  for (let i = 0; i < 11; i += 1) {
+    const {result} = await withFetch(() => ok('trojan://a@node.example.com:443#n'), () =>
+      worker.fetch(post({url: 'https://subscription.example.org/sub'}, {'CF-Connecting-IP': ip}), skipDns));
+    statuses.push(result);
+  }
+  assert.equal(statuses.at(-1).status, 429);
+  for (const response of statuses) {
+    assert.equal(response.headers.get('access-control-allow-origin'), null);
+    assert.equal(response.headers.get('access-control-allow-credentials'), null);
+  }
+});
+
+// A 200 with an empty body is not a subscription. Returning {text:''} made the UI tell
+// the user to paste a subscription they had already supplied as a link.
+test('an upstream 200 with an empty body is reported as unavailable, not as success', async () => {
+  for (const [name, body] of [['empty', ''], ['blank', '  \n\t\n']]) {
+    const {result} = await withFetch(() => new Response(body, {status: 200}), () =>
+      worker.fetch(post({url: 'https://subscription.example.org/sub'}, {'CF-Connecting-IP': `198.51.100.${name === 'empty' ? 81 : 82}`}), skipDns));
+    assert.equal(result.status, 422, name);
+    assert.match((await result.json()).message, /暂时未返回可用内容/, name);
+  }
+});

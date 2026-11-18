@@ -5,7 +5,7 @@ import SurgeProducer from '../vendor/sub-store/core/proxy-utils/producers/surge.
 import MihomoProducer from '../vendor/sub-store/core/proxy-utils/producers/clashmeta.js';
 import {lastParse} from '../vendor/normalizer.js';
 
-const MAX_BYTES=1024*1024, MAX_NODES=2000;
+const MAX_BYTES=1024*1024, MAX_NODES=2000, MAX_DEPTH=64;
 const supported=new Set(['ss','ssr','vmess','vless','trojan','anytls','hysteria2','hysteria','tuic','socks5','http','snell','wireguard']);
 const blocked=new Set(['__proto__','prototype','constructor']);
 // Surge built-in policy names may not be redefined as node names.
@@ -21,7 +21,21 @@ function checkTree(obj,depth=0){
  if(typeof obj==='string'&&/[\r\n\u0000-\u001f\u007f\u2028\u2029]/u.test(obj))bad('节点参数含控制字符，请检查来源');
  if(obj&&typeof obj==='object'){for(const [k,v] of Object.entries(obj)){if(blocked.has(k))bad('来源含不安全字段');checkTree(v,depth+1)}}
 }
+// yaml's flow parser costs superlinearly in nesting depth: a few hundred KB of
+// "proxies: [[[[…" burns seconds of CPU before it reports a syntax error, which
+// freezes the page. Reject deep nesting with one linear pass first. Openers inside
+// quoted scalars are counted too (a quoted scalar never balances 64 of them), so the
+// scan cannot be sidestepped with quotes.
+function assertShallow(raw){
+ let depth=0;
+ for(let i=0;i<raw.length;i+=1){
+  const c=raw.charCodeAt(i);
+  if(c===91||c===123)depth+=1;else if(c===93||c===125)depth-=1;
+  if(depth>MAX_DEPTH)bad('配置嵌套过深');
+ }
+}
 function yamlLoad(raw){
+ assertShallow(raw);
  const doc=parseDocument(raw,{uniqueKeys:true,merge:false,logLevel:'silent'});
  if(doc.errors.length)bad('YAML 格式错误或键名重复');
  visit(doc,{Node(_,node){if(isAlias(node)||node.anchor)bad('请展开 YAML 引用后再转换')}});
@@ -53,6 +67,9 @@ export function parseInput(text){
    let lines=raw.split(/\r?\n/).map(s=>s.trim()).filter(Boolean);
    if(lines.some(s=>/^\[Proxy\]$/i.test(s))){let section='';lines=lines.filter(s=>{if(/^\[.*\]$/.test(s)){section=s.toLowerCase();return false}return section==='[proxy]'&&!s.startsWith('#')});}
    else lines=lines.filter(s=>!s.startsWith('#'));
+   // Check the count before parsing: a 1 MiB body of short lines otherwise runs every
+   // protocol parser on hundreds of thousands of lines before the limit applies.
+   if(lines.length>MAX_NODES)bad(`节点数量最多 ${MAX_NODES} 个`);
    nodes=lines.map(parseOne);
  }
  if(!nodes.length)bad('没有找到可转换的节点；外部 provider 请先导出节点内容');
@@ -68,7 +85,9 @@ function normalize(p,i){
  if(n.uuid&&/[\s,=;"'|\r\n]/u.test(String(n.uuid)))bad(`第 ${i+1} 个节点用户 ID 含配置分隔符`);
  n.name=String(n.name||`节点 ${i+1}`).trim();if(!n.name||n.name.length>120)bad(`第 ${i+1} 个节点名称无效`);
  // Surge policy/group names have structural delimiters; use explicit safe aliases.
- n.name=n.name.replace(/[,=;"'\[\]|#]/g,' ').replace(/\s+/g,' ').trim()||`节点 ${i+1}`;
+ // A backslash is an escape character in the generated Surge line, so "A\\" followed
+ // by ", B" in the group would read as an escaped comma and merge two policies.
+ n.name=n.name.replace(/[\\,=;"'\[\]|#]/g,' ').replace(/\s+/g,' ').trim()||`节点 ${i+1}`;
  if(RESERVED.has(n.name))n.name+=' 节点';
  if(['vless','vmess'].includes(n.type)){if(!n.uuid)bad(`第 ${i+1} 个节点缺少用户 ID`);n.network ||= 'tcp';n.sni ||= n.servername;}
  if(['trojan','anytls','hysteria2','tuic'].includes(n.type))n.tls=true;
@@ -153,7 +172,12 @@ export async function convertSources({target,sources}){
   const text=String(source).trim();
   if(/^https?:\/\/[^\s]+$/.test(text)){
    const r=await fetch('/api/fetch',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({url:text}),credentials:'same-origin',cache:'no-store',referrerPolicy:'no-referrer'});
-   const data=await r.json();if(!r.ok)bad(data.message||`订阅 ${index+1} 读取失败`);bodies.push(data.text);
+   // The route normally answers JSON, but an edge error page must not surface as a
+   // raw SyntaxError from r.json() in the UI.
+   let data=null;
+   try{data=await r.json()}catch{data=null}
+   if(!r.ok||!data||typeof data.text!=='string')bad(typeof data?.message==='string'&&data.message?data.message:`订阅 ${index+1} 读取失败`);
+   bodies.push(data.text);
   }else bodies.push(text);
  }
  return convertTexts({target,sources:bodies});

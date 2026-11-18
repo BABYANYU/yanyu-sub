@@ -48,7 +48,11 @@
 订阅短链依赖 KV 绑定 `CONFIGS`（namespace `e7205f12788c4a2098c538a230f8f915`），已写入 `wrangler.json` 与 `scripts/deployment.json`：namespace 必须先在部署账号里创建，且 `CF_API_TOKEN` 需要 **Workers KV Storage: Edit** 权限，否则部署会因绑定失败而中断（功能本身在未绑定时返回 503，不会退化上传）。
 如需迁移到新账号，先在 CF 绑定域名，再更新 `CF_ACCOUNT_ID` 与 `CF_API_TOKEN` 两个仓库密钥。
 
-回滚：在 Actions 里对上一个成功提交重跑 `Deploy`，或本地 `npx wrangler rollback`。
+回滚：`Deploy` 在上传前会记录当前线上版本，`verify-live.mjs` 失败时自动 `wrangler rollback` 回上一版并轮询 `/api/health` 确认恢复；也可以手动在 Actions 里对上一个成功提交重跑 `Deploy`，或本地 `npx wrangler rollback`。生产部署串行执行（同一 concurrency 组、不中途取消）、限时 15 分钟。
+
+构建与源码包（`npm run build`）：
+- 资产映射由 `public/` 目录**整目录生成**，不再写死文件名：新增 `public/` 文件自动上线；扩展名没有声明 Content-Type 或缺少 `index.html`/`app.js`/`style.css`/`theme.js`/`converter.js`/`source.tar.gz` 时直接构建失败，避免新增文件静默 404。
+- `public/source.tar.gz`（AGPL 对应源码）会把 `public/` 源文件（含 `theme.js`）全部打进去，生成物与依赖排除；清单里任何一个必需文件缺失都会中止构建，不再静默跳过。
 
 Node 24：`npm ci --ignore-scripts`，`npm run build`，`npm test`。
 `src/converter.js` 为输入校验和固定模板；`src/worker.js` 为同源拉取与静态服务；`public/` 为网页。

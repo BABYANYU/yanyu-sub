@@ -57,8 +57,11 @@ test('the two-step interface is gone: no generate/download/copy/validity control
 });
 
 test('#publish is the only submit entry point and it publishes the link', () => {
-  const submits = [...html.matchAll(/<button\b[^>]*type="submit"[^>]*>/g)].map((match) => match[0]);
-  assert.equal(submits.length, 1, 'exactly one submit control may exist');
+  // The about dialog's close button is a submit inside <form method="dialog"> on
+  // purpose, so only the conversion form is counted here.
+  const convertBlock = html.slice(html.indexOf('<form id="convert-form"'), html.indexOf('</form>'));
+  const submits = [...convertBlock.matchAll(/<button\b[^>]*type="submit"[^>]*>/g)].map((match) => match[0]);
+  assert.equal(submits.length, 1, 'exactly one submit control may exist in the conversion form');
   const buttonTag = html.match(/<button[^>]*id="publish"[^>]*>/)?.[0] || '';
   assert.ok(buttonTag, '#publish must exist');
   assert.equal(buttonTag, submits[0], '#publish must be the submit control');
@@ -320,7 +323,9 @@ test('an edited source, a format switch or a new publish clears the old link', (
   assert.match(resetBody, /copyPublished\.disabled = true/);
   assert.match(resetBody, /revokePublished\.disabled = true/);
   // invalidate() is wired to both inputs that can invalidate a link.
-  assert.match(app, /sourceInput\.addEventListener\('input',[\s\S]{0,120}invalidate\(\)/);
+  // An input event invalidates unless the text still equals what was submitted, so a
+  // typo the user undoes immediately cannot silently destroy the manage token.
+  assert.match(app, /sourceInput\.addEventListener\('input',[\s\S]{0,120}invalidate\(sourceInput\.value\.trim\(\) === submittedText\)/);
   assert.match(app, /input\[name="target"\]'\)\.forEach\(\(input\) => input\.addEventListener\('change', invalidate\)\)/);
   // invalidate() runs on every submit, so a regenerated profile also drops the link.
   assert.match(app, /invalidate\(\);\n {2}const requestRevision = revision;/);
@@ -379,4 +384,346 @@ test('about dialog mirrors the reference site and opens without inline script', 
   assert.match(app, /showModal\(\)/);
   assert.match(app, /aboutDialog\.close\(\)/);
   assert.match(app, /getBoundingClientRect\(\)/);
+});
+
+// ---------------------------------------------------------------------------
+// Hardening regressions: about dialog, touch targets, contrast, theme behaviour
+// (driven through a fake DOM in node:vm), and the publish/revoke state machine.
+// ---------------------------------------------------------------------------
+const {runInNewContext} = await import('node:vm');
+const theme = await fs.readFile('public/theme.js', 'utf8');
+
+// --- about dialog -----------------------------------------------------------
+
+test('the about dialog closes without app.js: close is a dialog-form submit', () => {
+  const dialog = html.slice(html.indexOf('<dialog id="about-dialog"'), html.indexOf('</dialog>'));
+  assert.match(dialog, /<form method="dialog"/, 'the native dialog form is the no-script close path');
+  const closeTag = dialog.match(/<button[^>]*id="about-close"[^>]*>/)?.[0] || '';
+  assert.ok(closeTag, '#about-close must exist');
+  assert.match(closeTag, /type="submit"/, 'a submit closes <form method="dialog"> even with no script at all');
+  assert.match(closeTag, /aria-label="关闭关于"/);
+  // …therefore app.js must not intercept it and defeat the native submit.
+  assert.doesNotMatch(app, /getElementById\('about-close'\)/, 'closing must not depend on a script hook');
+  assert.doesNotMatch(app, /preventDefault\(\);\n\s*if \(aboutDialog\?\.open\) aboutDialog\.close\(\)/);
+  // The icon-only control keeps a 44px hit area.
+  assert.match(css, /#about-close \{[^}]*width:\s*44px[^}]*height:\s*44px/);
+});
+
+test('the close button stays reachable while the dialog scrolls', () => {
+  const rule = css.match(/\.about-close-form\s*\{[^}]*\}/)?.[0] || '';
+  assert.match(rule, /position:\s*sticky/, 'the close row must stick to the dialog scrollport');
+  assert.match(rule, /top:\s*0/);
+  assert.doesNotMatch(rule, /position:\s*absolute/, 'an absolute close button scrolls out of sight');
+  assert.match(rule, /height:\s*0/, 'the sticky row must not push the title down');
+  assert.match(css, /#about-dialog \{[^}]*overflow:\s*auto/, 'the dialog is the scroll container');
+  assert.match(css, /#about-dialog \{[^}]*max-height:\s*calc\(100dvh - 48px\)/, 'a tall dialog must be capped to the viewport');
+});
+
+test('closing the dialog returns focus to 关于, including on touch', () => {
+  assert.match(app, /aboutDialog\?\.addEventListener\('close'/);
+  assert.match(app, /document\.activeElement === document\.body\)\) aboutTrigger\.focus\(\)/,
+    'touch browsers never focus the button they activate, so focus must be restored by hand');
+  // Escape and the backdrop keep working through the native close path.
+  assert.match(app, /aboutDialog\.close\(\)/);
+  assert.match(app, /getBoundingClientRect\(\)/);
+});
+
+test('every text control is at least 44px on the touch path', () => {
+  for (const selector of ['.theme-toggle', '.about-link']) {
+    const rule = css.match(new RegExp(`\\${selector}\\s*\\{[^}]*\\}`))?.[0] || '';
+    assert.match(rule, /min-height:\s*44px/, `${selector} must be 44px tall`);
+    assert.match(rule, /min-width:\s*44px/, `${selector} must be 44px wide (2 CJK glyphs are only ~32px)`);
+    assert.match(rule, /justify-content:\s*center/);
+  }
+  for (const selector of ['.about-contact', '.published-actions .button']) {
+    const pattern = new RegExp(`${selector.replace(/[.]/g, '\\.').replace(/ /g, '\\s+')}\\s*\\{[^}]*\\}`);
+    assert.match(css.match(pattern)?.[0] || '', /min-height:\s*44px/, `${selector} must be 44px tall`);
+  }
+  // Nothing may declare a smaller floor (0–43px) for a tappable box.
+  const tooSmall = [...css.matchAll(/min-height:\s*(\d+)px/g)].map((m) => Number(m[1])).filter((px) => px < 44);
+  assert.deepEqual(tooSmall, [], 'no interactive floor may be below 44px');
+});
+
+// --- colour contrast --------------------------------------------------------
+
+function palette(block) {
+  return Object.fromEntries([...block.matchAll(/(--[a-z][\w-]*):\s*(#[0-9a-fA-F]{3,8})\b/g)].map((m) => [m[1].slice(2), m[2]]));
+}
+function channel(value) {
+  const v = value / 255;
+  return v <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4;
+}
+function luminance(hex) {
+  const h = hex.replace('#', '');
+  const full = h.length === 3 ? [...h].map((c) => c + c).join('') : h;
+  const [r, g, b] = [0, 2, 4].map((i) => channel(parseInt(full.slice(i, i + 2), 16)));
+  return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+}
+function contrast(a, b) {
+  const [hi, lo] = [luminance(a), luminance(b)].sort((x, y) => y - x);
+  return (hi + 0.05) / (lo + 0.05);
+}
+
+test('both palettes keep every text pair above 4.5:1', () => {
+  const light = palette(css.match(/:root \{([\s\S]*?)\n\}/)[1]);
+  const dark = palette(css.match(/:root\[data-theme="dark"\] \{([\s\S]*?)\n\}/)[1]);
+  for (const [name, p] of [['light', light], ['dark', dark]]) {
+    for (const [fg, bg] of [['ink', 'bg'], ['ink', 'surface'], ['ink', 'field'], ['muted', 'bg'],
+      ['muted', 'surface'], ['muted', 'field'], ['danger', 'danger-bg']]) {
+      const ratio = contrast(p[fg], p[bg]);
+      assert.ok(ratio >= 4.5, `${name}: ${fg} on ${bg} is ${ratio.toFixed(2)}:1, below AA 4.5:1`);
+    }
+    // The one filled button: white on the brand blue, idle and hovered.
+    for (const bg of ['blue', 'blue-hover']) {
+      const ratio = contrast('#ffffff', p[bg]);
+      assert.ok(ratio >= 4.5, `${name}: primary button text on ${bg} is ${ratio.toFixed(2)}:1`);
+    }
+  }
+});
+
+test('no dead palette token or style rule is left behind', () => {
+  const declared = new Set([...css.matchAll(/^\s*(--[a-z][\w-]*):/gm)].map((m) => m[1]));
+  const unused = [...declared].filter((name) => !css.includes(`var(${name})`));
+  assert.deepEqual(unused, [], 'every custom property must be referenced');
+  const ruleClasses = [...new Set([...css.matchAll(/^\.([a-z][\w-]*)/gm)].map((m) => m[1]))];
+  const orphaned = ruleClasses.filter((name) => !classesUsed.has(name));
+  assert.deepEqual(orphaned, [], 'every styled class must be used by the markup');
+});
+
+// --- theme.js, executed against a fake DOM ---------------------------------
+
+function themeEnv({now, stored = {}, throwOnRead = false, throwOnWrite = false, hasToggle = true} = {}) {
+  const state = {now: now || new Date(2026, 4, 12, 12, 0, 0)};
+  const timers = [];
+  const docEvents = {};
+  const winEvents = {};
+  const store = new Map(Object.entries(stored));
+  const writes = [];
+  const element = (props = {}) => {
+    const bag = {};
+    return Object.assign({
+      hidden: true,
+      attrs: {},
+      textContent: '',
+      addEventListener(type, fn) { (bag[type] || (bag[type] = [])).push(fn); },
+      fire(type, event) { for (const fn of bag[type] || []) fn(event || {}); },
+      setAttribute(name, value) { this.attrs[name] = value; },
+    }, props);
+  };
+  const toggle = element();
+  const label = element();
+  const meta = element();
+  class FakeDate extends Date {
+    constructor(...args) {
+      if (args.length === 0) super(state.now.getTime());
+      else if (args.length === 1 && args[0] instanceof Date) super(args[0].getTime());
+      else super(...args);
+    }
+    static now() { return state.now.getTime(); }
+  }
+  const document = {
+    readyState: 'loading',
+    hidden: false,
+    documentElement: {dataset: {}},
+    addEventListener(type, fn) { (docEvents[type] || (docEvents[type] = [])).push(fn); },
+    querySelector(selector) { return selector === 'meta[name="theme-color"]' ? meta : null; },
+    getElementById(id) {
+      if (!hasToggle) return null;
+      if (id === 'theme-toggle') return toggle;
+      if (id === 'theme-label') return label;
+      return null;
+    },
+  };
+  const sandbox = {
+    document,
+    window: {addEventListener(type, fn) { (winEvents[type] || (winEvents[type] = [])).push(fn); }},
+    localStorage: {
+      getItem(key) {
+        if (throwOnRead) throw new Error('SecurityError');
+        return store.has(key) ? store.get(key) : null;
+      },
+      setItem(key, value) {
+        if (throwOnWrite) throw new Error('QuotaExceededError');
+        writes.push(value);
+        store.set(key, value);
+      },
+    },
+    setTimeout(fn, ms) { timers.push({fn, ms}); return timers.length; },
+    clearTimeout(id) { if (timers[id - 1]) timers[id - 1].cleared = true; },
+    Date: FakeDate,
+    Math,
+  };
+  runInNewContext(theme, sandbox, {filename: 'theme.js'});
+  return {
+    store, writes, timers, toggle, label, meta, document,
+    dataset: document.documentElement.dataset,
+    fireDoc(type) { for (const fn of docEvents[type] || []) fn({}); },
+    fireWin(type, event) { for (const fn of winEvents[type] || []) fn(event || {}); },
+    setNow(value) { state.now = value; },
+    lastTimer() { return [...timers].reverse().find((t) => !t.cleared); },
+  };
+}
+
+const HOUR = 3600 * 1000;
+const at = (h, m = 0) => new Date(2026, 4, 12, h, m, 0);
+
+test('auto flips exactly at 07:00 and 19:00 and re-arms the timer', () => {
+  const cases = [
+    [at(6, 59), 'dark', 60 * 1000],
+    [at(7, 0), 'light', 12 * HOUR],
+    [at(12, 0), 'light', 7 * HOUR],
+    [at(18, 59), 'light', 60 * 1000],
+    [at(19, 0), 'dark', 12 * HOUR],
+    [at(23, 30), 'dark', 7.5 * HOUR],
+  ];
+  for (const [now, expected, wait] of cases) {
+    const env = themeEnv({now});
+    assert.equal(env.dataset.theme, expected, `at ${now.toTimeString().slice(0, 5)}`);
+    const timer = env.lastTimer();
+    assert.ok(timer, 'auto must schedule the next boundary');
+    assert.ok(Math.abs(timer.ms - wait) < 60000, `wait for ${now.toTimeString().slice(0, 5)} is ${timer.ms}ms, expected ~${wait}ms`);
+  }
+  // Crossing the boundary from a timer callback re-resolves, not just re-schedules.
+  const env = themeEnv({now: at(18, 59)});
+  assert.equal(env.dataset.theme, 'light');
+  env.setNow(new Date(2026, 4, 12, 19, 0, 1));
+  env.lastTimer().fn();
+  assert.equal(env.dataset.theme, 'dark', 'the 19:00 boundary must darken the page');
+  assert.ok(Math.abs(env.lastTimer().ms - 12 * HOUR) < 60000, 'and schedule tomorrow morning');
+});
+
+test('a throwing or missing localStorage never breaks the theme', () => {
+  for (const flags of [{throwOnRead: true}, {throwOnWrite: true}, {throwOnRead: true, throwOnWrite: true}]) {
+    const env = themeEnv({now: at(22), ...flags});
+    assert.equal(env.dataset.theme, 'dark', 'the clock still decides');
+    env.fireDoc('DOMContentLoaded');
+    assert.equal(env.toggle.hidden, false, 'the toggle is revealed even without storage');
+    env.toggle.fire('click');
+    assert.equal(env.dataset.theme, 'light', 'and cycling works in memory');
+    assert.equal(env.label.textContent, '浅色');
+    // Going to the background and back must not roll the in-memory choice back to
+    // whatever stale value the broken storage still returns.
+    env.fireDoc('visibilitychange');
+    assert.equal(env.dataset.theme, 'light');
+  }
+});
+
+test('the toggle cycles auto → light → dark → auto and stays labelled', () => {
+  const env = themeEnv({now: at(12)});
+  env.fireDoc('DOMContentLoaded');
+  assert.equal(env.toggle.hidden, false);
+  assert.equal(env.label.textContent, '自动');
+  env.toggle.fire('click');
+  assert.deepEqual(env.writes, ['light']);
+  assert.equal(env.label.textContent, '浅色');
+  assert.match(env.toggle.attrs['aria-label'], /当前主题：浅色，切换至深色/);
+  env.toggle.fire('click');
+  assert.equal(env.label.textContent, '深色');
+  assert.equal(env.dataset.theme, 'dark');
+  env.toggle.fire('click');
+  assert.equal(env.writes[2], 'auto');
+  assert.equal(env.label.textContent, '自动');
+  assert.equal(env.dataset.theme, 'light', 'auto resolves back to the clock');
+});
+
+test('a stored mode is restored and a stored mode wins over the clock', () => {
+  const env = themeEnv({now: at(12), stored: {'yanyu-sub-theme': 'dark'}});
+  assert.equal(env.dataset.theme, 'dark');
+  const bad = themeEnv({now: at(12), stored: {'yanyu-sub-theme': 'purple'}});
+  assert.equal(bad.dataset.theme, 'light', 'an unknown stored value falls back to auto');
+});
+
+test('another tab\'s theme reaches this one, and removal returns to auto', () => {
+  const env = themeEnv({now: at(12), stored: {'yanyu-sub-theme': 'auto'}});
+  assert.equal(env.dataset.theme, 'light');
+  env.store.set('yanyu-sub-theme', 'dark');
+  env.fireWin('storage', {key: 'yanyu-sub-theme', newValue: 'dark'});
+  assert.equal(env.dataset.theme, 'dark');
+  env.fireWin('storage', {key: 'some-other-key', newValue: 'light'});
+  assert.equal(env.dataset.theme, 'dark', 'unrelated keys are ignored');
+  env.store.delete('yanyu-sub-theme');
+  env.fireWin('storage', {key: 'yanyu-sub-theme', newValue: null});
+  assert.equal(env.dataset.theme, 'light', 'a removed key means auto');
+});
+
+test('returning to a bfcached page re-reads the clock', () => {
+  const env = themeEnv({now: at(18)});
+  env.fireDoc('DOMContentLoaded');
+  assert.equal(env.dataset.theme, 'light');
+  env.setNow(at(20));
+  env.fireWin('pageshow', {persisted: true});
+  assert.equal(env.dataset.theme, 'dark', 'a restored page must not show a stale theme');
+  // A normal load has nothing to re-resolve; it must not throw either.
+  env.fireWin('pageshow', {persisted: false});
+  assert.equal(env.dataset.theme, 'dark');
+});
+
+test('the toggle degrades to hidden when the markup or the ids are missing', () => {
+  const env = themeEnv({now: at(12), hasToggle: false});
+  env.fireDoc('DOMContentLoaded');
+  assert.equal(env.dataset.theme, 'light', 'the page is still themed');
+  assert.equal(env.toggle.hidden, true, 'no orphan button is shown');
+});
+
+test('theme.js is a blocking head script so the first paint never flashes', () => {
+  const themeTag = html.indexOf('<script src="./theme.js"></script>');
+  const cssTag = html.indexOf('<link rel="stylesheet" href="./style.css">');
+  const appTag = html.indexOf('<script type="module"');
+  assert.ok(themeTag > -1, 'theme.js must stay an external blocking script');
+  assert.ok(themeTag < cssTag, 'the theme must be decided before the stylesheet is applied');
+  assert.ok(cssTag < appTag, 'app.js must stay last');
+  assert.doesNotMatch(html.slice(themeTag, themeTag + 60), /defer|async/);
+  // Without JS the OS preference still wins through the media query fallback.
+  assert.match(css, /@media \(prefers-color-scheme: dark\) \{\s*:root:not\(\[data-theme\]\)/);
+  assert.doesNotMatch(theme, /innerHTML|document\.write|eval\(/, 'theme.js stays CSP-clean');
+});
+
+// --- publish / revoke state machine ---------------------------------------
+
+test('a successful revoke re-arms the submit button', () => {
+  const handler = app.slice(app.indexOf("revokePublished.addEventListener('click'"), app.indexOf("if (/iPhone|iPad|iPod/i)"));
+  assert.ok(handler, 'the revoke handler must exist');
+  const final = handler.slice(handler.lastIndexOf('} finally {'));
+  const guard = final.indexOf('if (publication === current)');
+  const arm = final.indexOf('publishButton.disabled = running;');
+  const clear = final.indexOf('revoking = false;');
+  assert.ok(arm > -1, 'the submit button must be re-armed in finally');
+  assert.ok(clear > -1, 'the revoking guard must always be released');
+  // After a success resetPublication() nulls it, so a guarded re-arm would deadlock
+  // the entry point: both must happen before the publication check.
+  assert.ok(guard === -1 || (arm < guard && clear < guard),
+    'publishButton/revoking must be restored outside the "publication === current" guard');
+});
+
+test('a request that outlives its timeout is aborted', () => {
+  const publishBody = functionBody(app, 'publishLink');
+  assert.match(publishBody, /const controller = new AbortController\(\)/);
+  assert.match(publishBody, /signal: controller\.signal/);
+  assert.match(publishBody.slice(publishBody.indexOf('} catch (error) {')), /^} catch \(error\) \{\n {4}controller\.abort\(\);/,
+    'a late publish must not resolve into a page that already gave up');
+  const revoke = app.slice(app.indexOf("revokePublished.addEventListener('click'"), app.indexOf("if (/iPhone|iPad|iPod/i)"));
+  assert.match(revoke, /new AbortController\(\)/);
+  assert.match(revoke, /signal: controller\.signal/);
+  assert.match(revoke.slice(revoke.indexOf('} catch (error) {')), /^} catch \(error\) \{\n {4}controller\.abort\(\);/);
+  // The timeout races stay bounded by the two published budgets.
+  assert.match(app, /const CONVERT_TIMEOUT_MS = 90000;/);
+  assert.match(app, /const PUBLISH_TIMEOUT_MS = 30000;/);
+});
+
+test('an unchanged source keeps the live link and its manage token', () => {
+  assert.match(app, /let submittedText = ''/);
+  assert.match(app, /submittedText = text;\n {2}invalidate\(\);/);
+  const body = functionBody(app, 'invalidate');
+  const early = body.indexOf('if (unchanged && !running)');
+  assert.ok(early > -1, 'invalidate() must accept the "text unchanged" case');
+  assert.ok(early < body.indexOf('resetPublication()'), 'the early return must precede dropping the token');
+  assert.match(body.slice(early), /errorPanel\.hidden = true;[\s\S]{0,200}?\n {4}return;/);
+});
+
+test('server error text is never shown for a 5xx', () => {
+  assert.match(app, /if \(status < 500 && typeof message === 'string' && message\.trim\(\)\) return cleanDiagnostic\(message\);/,
+    'only 4xx messages may be rendered');
+  assert.match(app, /if \(status === 503\) return '订阅服务暂时不可用/);
+  // The generic fallback carries no request detail.
+  assert.match(app, /return '生成订阅链接失败，请稍后重试。';/);
 });

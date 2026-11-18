@@ -69,6 +69,13 @@ npx wrangler kv key delete 's:Ab3dE9kZ' --namespace-id e7205f12788c4a2098c538a23
 
 `scripts/verify-live.mjs` 在原有健康版本、首页契约、静态资源、CSP/nosniff/Referrer-Policy、`/source.tar.gz` gzip、`/api/fetch` 403/405/422/404 护栏之外，新增：
 
+- 首页契约扩到 `#theme-toggle`、`#about-dialog`、`#publish` 与 `src="./theme.js"`，安全头补 `X-Frame-Options: DENY` 与 `object-src 'none'`；
+- **资产映射清扫**：导入本次构建的 `src/assets.generated.js`（asset map 由 `public/` 目录生成），逐个 `HEAD` 每个映射路径并比对 `Content-Type`，再把线上 HTML 的 `src="./…"`/`href="./…"` 引用逐个探测 200——既抓“映射里的文件没上线”，也抓“页面引用了没映射的文件”；
+- `/source.tar.gz` 不只嗅 gzip 魔数，而是**解压**（gunzip）后确认 tar 内确有 `LICENSE`、`NOTICE.md`、`src/worker.js`、`src/converter.js`、`public/index.html`、`public/theme.js`、`package-lock.json`，防止空包或错包混过；
+- 短链发布/撤销护栏：`GET`/`HEAD /s/AAAAAAAA` 必须 404 且 `Cache-Control` 含 `no-store`、不是 HTML；`/s/not-a-token`、`/s/AAAAAAAA/extra` 必须 404；`GET /api/publish` 必须 405 + `Allow: POST`；跨源 `POST /api/publish` 与跨源 `DELETE /api/publish/<token>` 必须 403，且在落库前拒绝（响应里不出现 64 位管理令牌）；
+
+下面三条是永久化时就有的短链探测：
+
 - `GET /s/AAAAAAAA`（一个从未发布过的 8 位 token）必须 **404**；
 - 该响应 `content-type` 必须存在且 **不是 `text/html`**，正文里也不能出现 HTML 首行 —— 防止短链路由缺失时回落到网页外壳（那会让“失效链接”看起来像成功）；
 - 该响应不得 `Cache-Control: public`。

@@ -1,18 +1,40 @@
 name: Deploy
+# Production deploy for https://sub.fakeyou.eu.org.
+#
+# Repository secrets (Settings → Secrets and variables → Actions):
+#   CF_ACCOUNT_ID  account that owns the CONFIGS KV namespace
+#   CF_API_TOKEN   API token with BOTH:
+#                    - Account → Workers Scripts → Edit   (upload the Worker)
+#                    - Account → Workers KV Storage → Edit (write the CONFIGS
+#                      binding on every deploy)
+#                  Missing KV edit makes `wrangler deploy` abort with
+#                  "authentication error" / "unauthorized to access KV namespace";
+#                  the old version keeps serving, so the job fails before traffic
+#                  moves. A scoped token is enough: no Zone, DNS or Pages rights.
+#
+# The deploy is serialised (no concurrent production writes), time-boxed, and
+# rolls back to the version that was serving production if verification fails.
+# wrangler.json and scripts/deployment.json must agree; `npm test` runs before the
+# upload and fails the job on drift, so the file wrangler actually reads can never
+# diverge from the documented deployment.
 on:
   push:
     branches: [main]
   workflow_dispatch:
 permissions:
   contents: read
+# One production deploy at a time; never cancel a deploy that is mid-flight
+# (that could leave Cloudflare on a half-updated version with no rollback check).
 concurrency:
   group: yanyu-sub-production
   cancel-in-progress: false
+env:
+  WRANGLER_SEND_METRICS: 'false'
 jobs:
   deploy:
     if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
     environment: production
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
@@ -24,15 +46,71 @@ jobs:
           cache: npm
       - run: npm ci --ignore-scripts --no-fund --no-audit
       - run: npm run build
+      # Unit, contract and deployment-config tests: wrangler.json ↔
+      # scripts/deployment.json consistency, asset-map coverage and the source
+      # archive are all asserted here, before anything is uploaded.
       - run: npm test
       - run: npm audit --omit=dev --audit-level=high
-      - name: Deploy exact tested main revision
+      - name: Record the version currently serving production
+        id: previous
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
-          WRANGLER_SEND_METRICS: 'false'
-        run: npm exec --no -- wrangler deploy --config wrangler.json --no-bundle
+        run: |
+          set -euo pipefail
+          if ! npm exec --no -- wrangler deployments list --config wrangler.json --json > /tmp/deployments.json; then
+            echo "::warning::Could not list previous deployments; rollback target unavailable"
+            echo '[]' > /tmp/deployments.json
+          fi
+          node -e '
+            const fs = require("node:fs");
+            let parsed = [];
+            try { parsed = JSON.parse(fs.readFileSync("/tmp/deployments.json", "utf8")); } catch {}
+            // wrangler has returned both a bare array and {deployments: [...]}.
+            const list = Array.isArray(parsed) ? parsed : Array.isArray(parsed?.deployments) ? parsed.deployments : [];
+            const version = list[0]?.versions?.[0]?.version_id ?? list[0]?.version_id ?? "";
+            fs.appendFileSync(process.env.GITHUB_OUTPUT, `version_id=${version}\n`);
+            console.log(version ? `rollback target: ${version}` : "no previous version recorded");
+          '
+      - name: Deploy exact tested main revision
+        id: deploy
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
+        run: npm exec --no -- wrangler deploy --config wrangler.json --no-bundle --tag "ci-${{ github.sha }}" --message "CI deploy of ${{ github.sha }}"
       - name: Verify deployed revision
+        id: verify
         env:
           GITHUB_SHA: ${{ github.sha }}
         run: node scripts/verify-live.mjs
+      - name: Roll back when the upload or verification fails
+        # Only after an upload was attempted: a failure in install/build/test/audit
+        # happens before any traffic moves and must not touch production.
+        if: failure() && steps.deploy.outcome == 'success'
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
+          PREVIOUS_VERSION: ${{ steps.previous.outputs.version_id }}
+          FAILED_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          if [ -z "${PREVIOUS_VERSION}" ]; then
+            echo "::error::No rollback target was recorded (first deploy?); production may be serving the failed build. Roll back manually with: npx wrangler rollback"
+            exit 1
+          fi
+          echo "::warning::Rolling production back to version ${PREVIOUS_VERSION}"
+          npm exec --no -- wrangler rollback "${PREVIOUS_VERSION}" --yes --message "auto rollback: ${FAILED_SHA} failed verification"
+          for attempt in 1 2 3 4 5 6 7 8 9 10; do
+            if curl -fsS --max-time 10 https://sub.fakeyou.eu.org/api/health | tee /tmp/health.json | grep -q '"ok":true'; then
+              curl -fsS --max-time 10 -o /dev/null -w 'homepage %{http_code}\n' https://sub.fakeyou.eu.org/
+              cat /tmp/health.json
+              echo "Rollback verified: production is serving the previous version again."
+              exit 0
+            fi
+            sleep 5
+          done
+          echo "::error::Rollback did not become healthy; inspect Cloudflare → Workers → yanyu-sub immediately"
+          exit 1
+      - name: Note the rollback path on success
+        if: success()
+        run: echo "Deployed and verified ${{ github.sha }}; a previous version can be restored with 'npx wrangler rollback' (or by re-running Deploy on the last good commit)."

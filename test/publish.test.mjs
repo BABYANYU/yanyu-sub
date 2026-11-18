@@ -14,11 +14,13 @@ function memoryKV(initial = new Map()) {
   const puts = [];
   const gets = [];
   const deletes = [];
+  const lists = [];
   return {
     store,
     puts,
     gets,
     deletes,
+    lists,
     async get(key) {
       gets.push(key);
       return store.has(key) ? store.get(key) : null;
@@ -31,8 +33,9 @@ function memoryKV(initial = new Map()) {
       deletes.push(key);
       store.delete(key);
     },
-    // Only the manage-token alias needs list(); the short-token path never lists.
+    // No route may scan the namespace any more; keeping list() proves that.
     async list(options = {}) {
+      lists.push(options);
       const names = [...store.keys()].filter((key) => key.startsWith(options.prefix || ''));
       return {keys: names.slice(0, options.limit || 1000).map((name) => ({name})), list_complete: true};
     },
@@ -463,10 +466,10 @@ test('the existing API surface and headers are unchanged by the publish routes',
   assert.equal(page.headers.get('x-frame-options'), 'DENY');
 });
 
-// The shipped UI currently sends the 64-hex manage token as the DELETE path segment.
-// That alias is accepted only when the header repeats the same value, so a leaked
-// short URL can never be revoked without the secret.
-test('the manage token may stand in for the short token in the DELETE path', async () => {
+// An older UI put the 64-hex manage token in the DELETE path. That alias made the
+// secret alone sufficient to revoke (plus a KV list scan per request), so it is gone:
+// the path must be the short token and the secret must arrive in the header.
+test('a 64-hex manage token in the DELETE path is refused without touching KV', async () => {
   const CONFIGS = memoryKV();
   const published = await (await worker.fetch(publish({content, target: 'Surge'}), {CONFIGS})).json();
   const short = published.url.split('/').pop();
@@ -475,18 +478,67 @@ test('the manage token may stand in for the short token in the DELETE path', asy
     headers: {Origin: origin, 'X-Manage-Token': manageToken, 'CF-Connecting-IP': nextIp()},
   });
 
-  const mismatch = await worker.fetch(revoke(published.manageToken, 'c'.repeat(64)), {CONFIGS});
-  assert.equal(mismatch.status, 404);
-  const noHeader = await worker.fetch(new Request(origin + '/api/publish/' + published.manageToken, {
-    method: 'DELETE', headers: {Origin: origin, 'CF-Connecting-IP': nextIp()},
-  }), {CONFIGS});
-  assert.equal(noHeader.status, 404);
-  const unknown = await worker.fetch(revoke('d'.repeat(64), 'd'.repeat(64)), {CONFIGS});
-  assert.equal(unknown.status, 404);
-  assert.equal(CONFIGS.deletes.length, 0);
+  const before = {gets: CONFIGS.gets.length, puts: CONFIGS.puts.length, deletes: CONFIGS.deletes.length, lists: CONFIGS.lists.length};
+  for (const [pathToken, manageToken] of [
+    [published.manageToken, published.manageToken],
+    [published.manageToken, 'c'.repeat(64)],
+    ['d'.repeat(64), 'd'.repeat(64)],
+  ]) {
+    const response = await worker.fetch(revoke(pathToken, manageToken), {CONFIGS});
+    assert.equal(response.status, 404);
+    assert.deepEqual(await response.json(), {message: '短链接不存在'});
+  }
+  assert.deepEqual({gets: CONFIGS.gets.length, puts: CONFIGS.puts.length, deletes: CONFIGS.deletes.length, lists: CONFIGS.lists.length}, before,
+    'a rejected path shape must not read, list or write KV');
+  assert.equal((await worker.fetch(new Request(published.url), {CONFIGS})).status, 200, 'the link is still live');
 
-  const ok = await worker.fetch(revoke(published.manageToken, published.manageToken), {CONFIGS});
+  // Revocation capability is unchanged: short token in the path + secret in the header.
+  const ok = await worker.fetch(new Request(origin + '/api/publish/' + short, {
+    method: 'DELETE', headers: {Origin: origin, 'X-Manage-Token': published.manageToken, 'CF-Connecting-IP': nextIp()},
+  }), {CONFIGS});
   assert.equal(ok.status, 204);
   assert.deepEqual(CONFIGS.deletes, ['s:' + short]);
   assert.equal((await worker.fetch(new Request(published.url), {CONFIGS})).status, 404);
+});
+
+// The short-token path is the only revoke shape, so no short-link route may ever scan
+// the namespace (the removed alias did one list() plus up to 200 get() per request).
+test('no short-link route lists the KV namespace', async () => {
+  const CONFIGS = memoryKV();
+  const published = await (await worker.fetch(publish({content, target: 'Surge'}), {CONFIGS})).json();
+  const short = published.url.split('/').pop();
+  await worker.fetch(new Request(published.url), {CONFIGS});
+  await worker.fetch(new Request(published.url, {method: 'HEAD'}), {CONFIGS});
+  await worker.fetch(new Request(origin + '/api/publish/' + short, {
+    method: 'DELETE', headers: {Origin: origin, 'X-Manage-Token': published.manageToken, 'CF-Connecting-IP': nextIp()},
+  }), {CONFIGS});
+  assert.deepEqual(CONFIGS.lists, []);
+});
+
+test('a full publish bucket rejects new addresses instead of growing without bound', async () => {
+  const CONFIGS = memoryKV();
+  // One address that already holds a bucket before the table fills.
+  const known = '192.0.2.240';
+  assert.equal((await worker.fetch(publish({content, target: 'Surge'}, {'CF-Connecting-IP': known}), {CONFIGS})).status, 200);
+
+  // Every publish attempt consumes a bucket before validation, so an invalid payload
+  // fills the table cheaply (422 = counted, 429 = table full and the key is new).
+  const statuses = [];
+  for (let i = 0; i < 1200; i += 1) {
+    const ip = `100.${Math.floor(i / 250)}.${i % 250}.7`;
+    statuses.push((await worker.fetch(publish({target: 'Surge'}, {'CF-Connecting-IP': ip}), {CONFIGS})).status);
+  }
+  const capped = statuses.indexOf(429);
+  assert.ok(capped > 0, 'the table must stop accepting new addresses once it is full');
+  assert.ok(capped >= 600, 'the table only refuses once ~1000 buckets exist');
+  assert.ok(!statuses.slice(capped).includes(422), 'once full, no further new address is counted');
+  assert.equal(CONFIGS.puts.length, 1, 'nothing capped out may reach KV');
+
+  // Fail closed for a brand-new address, even with a valid payload.
+  const fresh = await worker.fetch(publish({content, target: 'Surge'}, {'CF-Connecting-IP': '100.250.250.250'}), {CONFIGS});
+  assert.equal(fresh.status, 429);
+  assert.equal(CONFIGS.puts.length, 1);
+
+  // An address that already holds a bucket keeps working while the table is full.
+  assert.equal((await worker.fetch(publish({content, target: 'Surge'}, {'CF-Connecting-IP': known}), {CONFIGS})).status, 200);
 });
