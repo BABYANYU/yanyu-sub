@@ -2,12 +2,20 @@
 // DELETE /api/publish/:token. The KV binding (CONFIGS) is replaced with an in-memory
 // Map so the suite runs offline and can inspect what would be written. Every test
 // uses its own CF-Connecting-IP because the publish bucket allows 15 per 5 minutes.
+// The per-address quota tests reuse one address on purpose (a few calls, well inside
+// that bucket) and the 51-link loop steps the clock instead of the address.
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
+import {createHash} from 'node:crypto';
 import worker from '../src/worker.js';
 
 const ORIGIN = 'https://sub.fakeyou.eu.org';
 const origin = new URL(ORIGIN).origin;
+// A publication now writes the record plus one per-address counter key; tests that
+// count storage writes separate the two by key prefix.
+const recordWrites = (kv) => kv.puts.filter(({key}) => key.startsWith('s:'));
+const counterWrites = (kv) => kv.puts.filter(({key}) => key.startsWith('own:'));
+const hashOf = (value) => createHash('sha256').update(value).digest('hex');
 
 function memoryKV(initial = new Map()) {
   const store = new Map(initial);
@@ -68,11 +76,11 @@ test('publish stores the config, returns a permanent short URL and serves it bac
   assert.match(token, /^[A-Za-z0-9]{8}$/);
   assert.match(body.manageToken, /^[0-9a-f]{64}$/, 'manage token must be 32 random bytes, hex encoded');
 
-  // Stored record: one KV write, private fields, no expiry at all.
-  assert.equal(CONFIGS.puts.length, 1);
+  // Stored record: one record write, private fields, no expiry at all.
+  assert.equal(recordWrites(CONFIGS).length, 1);
   const [{key, value, options}] = CONFIGS.puts;
   assert.equal(key, 's:' + token);
-  assert.deepEqual(Object.keys(JSON.parse(value)).sort(), ['content', 'createdAt', 'expiresAt', 'manageHash', 'target']);
+  assert.deepEqual(Object.keys(JSON.parse(value)).sort(), ['content', 'createdAt', 'expiresAt', 'manageHash', 'ownerHash', 'target']);
   const stored = JSON.parse(value);
   assert.equal(stored.content, content);
   assert.equal(stored.target, 'Mihomo');
@@ -185,7 +193,7 @@ test('the request body is capped at 2 MiB', async () => {
 
   const ok = await worker.fetch(publish({content: 'y'.repeat(1024 * 1024), target: 'Surge'}), {CONFIGS});
   assert.equal(ok.status, 200);
-  assert.equal(CONFIGS.puts.length, 1);
+  assert.equal(recordWrites(CONFIGS).length, 1);
 });
 
 test('publish requires a same-origin request with a JSON content type', async () => {
@@ -240,7 +248,8 @@ test('the short token is exactly 8 base62 characters, random and collision-check
   const collision = memoryKV();
   collision.get = async (key) => {
     collision.gets.push(key);
-    if (collision.gets.length <= 2) {
+    // Only the two record keys collide; the owner counter is simply absent.
+    if (key.startsWith('s:') && occupied.size < 2) {
       occupied.add(key);
       return JSON.stringify({content, target: 'Surge', manageHash: 'a'.repeat(64)});
     }
@@ -249,7 +258,8 @@ test('the short token is exactly 8 base62 characters, random and collision-check
   const retried = await worker.fetch(publish({content, target: 'Surge'}), {CONFIGS: collision});
   assert.equal(retried.status, 200);
   const fresh = (await retried.json()).url.split('/').pop();
-  assert.equal(collision.gets.length, 3, 'two collisions then a free token');
+  assert.equal(collision.gets.filter((key) => key.startsWith('s:')).length, 3, 'two collisions then a free token');
+  assert.equal(occupied.size, 2);
   assert.equal(occupied.has('s:' + fresh), false);
 
   // Five collisions in a row give up with a generic error and write nothing.
@@ -258,8 +268,8 @@ test('the short token is exactly 8 base62 characters, random and collision-check
   exhausted.get = async (key) => {exhausted.gets.push(key); return JSON.stringify({content, target: 'Surge'});};
   const failed = await worker.fetch(publish({content, target: 'Surge'}), {CONFIGS: exhausted});
   assert.equal(failed.status, 503);
-  assert.equal(exhausted.gets.length, 5);
-  assert.equal(exhausted.puts.length, 0);
+  assert.equal(exhausted.gets.filter((key) => key.startsWith('s:')).length, 5);
+  assert.equal(exhausted.puts.length, 0, 'a publication that cannot place a token writes nothing, counter included');
 });
 
 test('publish validates content and target without echoing what was sent', async () => {
@@ -383,7 +393,7 @@ test('publish and revoke share a 15-per-5-minute bucket per client address', asy
     statuses.push((await worker.fetch(publish({content, target: 'Surge'}, {'CF-Connecting-IP': ip}), {CONFIGS})).status);
   }
   assert.deepEqual(statuses, [...Array(15).fill(200), 429, 429]);
-  assert.equal(CONFIGS.puts.length, 15, 'rejected requests must not be stored');
+  assert.equal(recordWrites(CONFIGS).length, 15, 'rejected requests must not be stored');
 
   // Revoke draws from the same bucket, so the same address stays blocked.
   const published = JSON.parse(CONFIGS.puts[0].value);
@@ -515,6 +525,251 @@ test('no short-link route lists the KV namespace', async () => {
   assert.deepEqual(CONFIGS.lists, []);
 });
 
+// ---- Per-address cap on live permanent links -------------------------------------
+// A permanent record never expires, so nothing but this counter bounds how much one
+// caller can leave in KV. The publish bucket allows 15 calls per 5 minutes, so the
+// counter is seeded to stand in for earlier publications; the assertions then cover
+// the exact boundary (50 live = allowed, 51st = refused) and the revoke path back.
+
+test('one address may hold 50 live links, the 51st is refused and a revoke frees the slot', async () => {
+  const ip = '203.0.113.250';
+  const ownerHash = hashOf(ip);
+  const CONFIGS = memoryKV(new Map([['own:' + ownerHash, '49']]));
+
+  const fiftieth = await worker.fetch(publish({content, target: 'Surge'}, {'CF-Connecting-IP': ip}), {CONFIGS});
+  assert.equal(fiftieth.status, 200, 'the 50th live record is still allowed');
+  const published = await fiftieth.json();
+  assert.equal(CONFIGS.store.get('own:' + ownerHash), '50', 'the counter follows the record');
+
+  const refused = await worker.fetch(publish({content, target: 'Surge'}, {'CF-Connecting-IP': ip}), {CONFIGS});
+  assert.equal(refused.status, 429, 'the 51st live record is refused');
+  assert.deepEqual(await refused.json(), {message: '短链数量已达上限，请先撤销旧链接'});
+  assert.equal(refused.headers.get('cache-control'), 'private, no-store');
+  assert.equal(refused.headers.get('x-content-type-options'), 'nosniff');
+  assert.equal(recordWrites(CONFIGS).length, 1, 'the refused publish stores no record');
+  assert.equal(CONFIGS.store.get('own:' + ownerHash), '50', 'the refused publish does not inflate the counter');
+
+  // Revoking one link hands the slot back to the same address.
+  const revoke = await worker.fetch(new Request(origin + '/api/publish/' + published.url.split('/').pop(), {
+    method: 'DELETE', headers: {Origin: origin, 'X-Manage-Token': published.manageToken, 'CF-Connecting-IP': ip},
+  }), {CONFIGS});
+  assert.equal(revoke.status, 204);
+  assert.equal(CONFIGS.store.get('own:' + ownerHash), '49', 'a successful revoke decrements the counter');
+  assert.equal(counterWrites(CONFIGS).at(-1).options.expirationTtl, 30 * 24 * 60 * 60, 'the decrement refreshes the counter TTL');
+
+  const again = await worker.fetch(publish({content, target: 'Mihomo'}, {'CF-Connecting-IP': ip}), {CONFIGS});
+  assert.equal(again.status, 200, 'after a revoke the same address may publish again');
+  assert.equal(CONFIGS.store.get('own:' + ownerHash), '50');
+  assert.equal(recordWrites(CONFIGS).length, 2);
+
+  // The cap is per address: a different address keeps its own budget.
+  const other = await worker.fetch(publish({content, target: 'Surge'}, {'CF-Connecting-IP': '203.0.113.251'}), {CONFIGS});
+  assert.equal(other.status, 200);
+  assert.equal(CONFIGS.store.get('own:' + hashOf('203.0.113.251')), '1');
+});
+
+test('the cap refusal is distinguishable from the rate limit and leaks no owner data', async () => {
+  const ip = '203.0.113.252';
+  const ownerHash = hashOf(ip);
+  const CONFIGS = memoryKV(new Map([['own:' + ownerHash, '50']]));
+  const response = await worker.fetch(publish({content, target: 'Surge'}, {'CF-Connecting-IP': ip}), {CONFIGS});
+  assert.equal(response.status, 429);
+  const text = await response.text();
+  assert.deepEqual(JSON.parse(text), {message: '短链数量已达上限，请先撤销旧链接'});
+  assert.doesNotMatch(text, /请求过于频繁/, 'the cap message must not masquerade as the rate limiter');
+  assert.equal(text.includes(ownerHash), false, 'the owner hash is never echoed');
+  assert.equal(text.includes(ip), false, 'the address is never echoed');
+  assert.equal(recordWrites(CONFIGS).length, 0);
+});
+
+// ---- Owner identity in KV --------------------------------------------------------
+
+test('KV stores only SHA-256 of the address and no response reveals it', async () => {
+  const ip = '192.0.2.77';
+  const ownerHash = hashOf(ip);
+  const CONFIGS = memoryKV();
+  const response = await worker.fetch(publish({content, target: 'Surge'}, {'CF-Connecting-IP': ip}), {CONFIGS});
+  assert.equal(response.status, 200);
+  const body = await response.json();
+
+  const recordText = recordWrites(CONFIGS)[0].value;
+  const record = JSON.parse(recordText);
+  assert.equal(record.ownerHash, ownerHash, 'the owner handle is the SHA-256 of the address');
+  assert.equal(record.ownerHash.length, 64);
+  assert.equal(record.target, 'Surge', 'the rest of the record is unchanged');
+  assert.equal(record.expiresAt, null);
+
+  const served = await worker.fetch(new Request(body.url), {CONFIGS});
+  const servedText = await served.text();
+  const keys = [...CONFIGS.store.keys()].join(' ');
+  for (const [name, text] of [['record', recordText], ['publish response', JSON.stringify(body)],
+    ['served config', servedText], ['KV keys', keys]]) {
+    assert.equal(text.includes(ip), false, `${name} must not contain the raw address`);
+  }
+  // The hash itself is the owner handle: it may live in KV (record field + counter key)
+  // but it must never travel back to a client.
+  for (const [name, text] of [['publish response', JSON.stringify(body)],
+    ['served config', servedText]]) {
+    assert.equal(text.includes(ownerHash), false, `${name} must not expose the owner hash`);
+  }
+  assert.ok(keys.includes('own:' + ownerHash), 'the counter is keyed by the hash');
+  assert.equal(keys.includes(ip), false);
+
+  // Error paths stay generic as well.
+  const foreign = await worker.fetch(publish({content, target: 'Surge'}, {'CF-Connecting-IP': ip, Origin: 'https://attacker.example'}), {CONFIGS});
+  assert.equal(foreign.status, 403);
+  assert.equal((await foreign.text()).includes(ownerHash), false);
+  const missing = await worker.fetch(new Request(origin + '/s/ZZZZZZZZ'), {CONFIGS});
+  assert.equal(missing.status, 404);
+  assert.equal((await missing.text()).includes(ownerHash), false);
+
+  // A legacy caller with no CF-Connecting-IP is bucketed as "unknown" — still hashed.
+  const anonymous = memoryKV();
+  await worker.fetch(new Request(ORIGIN + '/api/publish', {
+    method: 'POST', headers: {Origin: origin, 'Content-Type': 'application/json'}, body: JSON.stringify({content, target: 'Surge'}),
+  }), {CONFIGS: anonymous});
+  assert.equal(JSON.parse(recordWrites(anonymous)[0].value).ownerHash, hashOf('unknown'));
+});
+
+test('the counter key carries a 30-day TTL while the record stays permanent', async () => {
+  const ip = '192.0.2.88';
+  const ownerHash = hashOf(ip);
+  const CONFIGS = memoryKV();
+  await worker.fetch(publish({content, target: 'Surge'}, {'CF-Connecting-IP': ip}), {CONFIGS});
+  const [counter] = counterWrites(CONFIGS);
+  assert.equal(counter.key, 'own:' + ownerHash);
+  assert.equal(counter.value, '1');
+  assert.equal(counter.options?.expirationTtl, 30 * 24 * 60 * 60, 'the counter must expire so it never lingers forever');
+  assert.equal(recordWrites(CONFIGS)[0].options?.expirationTtl, undefined, 'the record itself stays permanent');
+
+  // An explicit TTL publication changes neither the counter TTL nor the record shape.
+  const timed = memoryKV();
+  await worker.fetch(publish({content, target: 'Surge', ttlSeconds: 3600}, {'CF-Connecting-IP': ip}), {CONFIGS: timed});
+  assert.equal(recordWrites(timed)[0].options.expirationTtl, 3600);
+  assert.equal(counterWrites(timed)[0].options.expirationTtl, 30 * 24 * 60 * 60);
+});
+
+test('a missing, empty or malformed counter reads as zero instead of failing', async () => {
+  const ip = '192.0.2.89';
+  const ownerHash = hashOf(ip);
+  for (const seeded of [undefined, '', '  ', 'NaN', 'abc', '-3', '0.4', '1e0']) {
+    const CONFIGS = memoryKV(seeded === undefined ? new Map() : new Map([['own:' + ownerHash, seeded]]));
+    const response = await worker.fetch(publish({content, target: 'Surge'}, {'CF-Connecting-IP': ip}), {CONFIGS});
+    assert.equal(response.status, 200, `counter value ${JSON.stringify(seeded)}`);
+    const expected = Number(seeded) > 0 ? String(Math.floor(Number(seeded)) + 1) : '1';
+    assert.equal(CONFIGS.store.get('own:' + ownerHash), expected, `counter value ${JSON.stringify(seeded)}`);
+  }
+
+  // Revoking while the counter key is gone clamps at 0 and never throws.
+  const published = await (await worker.fetch(publish({content, target: 'Surge'}, {'CF-Connecting-IP': '192.0.2.91'}), {CONFIGS: memoryKV()})).json();
+  const lapsed = memoryKV();
+  await lapsed.put('s:' + published.url.split('/').pop(), JSON.stringify({content, target: 'Surge', createdAt: new Date().toISOString(),
+    expiresAt: null, manageHash: hashOf(published.manageToken), ownerHash: hashOf('192.0.2.91')}));
+  const revoked = await worker.fetch(new Request(origin + '/api/publish/' + published.url.split('/').pop(), {
+    method: 'DELETE', headers: {Origin: origin, 'X-Manage-Token': published.manageToken, 'CF-Connecting-IP': '192.0.2.91'},
+  }), {CONFIGS: lapsed});
+  assert.equal(revoked.status, 204);
+  assert.equal(lapsed.store.get('own:' + hashOf('192.0.2.91')), '0', 'the counter never goes below zero');
+  assert.equal(counterWrites(lapsed).at(-1).options.expirationTtl, 30 * 24 * 60 * 60);
+});
+
+test('a record written before the cap has no owner hash and still revokes cleanly', async () => {
+  const secret = 'legacy-manage-token';
+  const CONFIGS = memoryKV(new Map([['s:AbCd1234', JSON.stringify({content, target: 'Surge',
+    createdAt: new Date().toISOString(), expiresAt: null, manageHash: hashOf(secret)})]]));
+  const response = await worker.fetch(new Request(origin + '/api/publish/AbCd1234', {
+    method: 'DELETE', headers: {Origin: origin, 'X-Manage-Token': secret, 'CF-Connecting-IP': '192.0.2.92'},
+  }), {CONFIGS});
+  assert.equal(response.status, 204);
+  assert.deepEqual(CONFIGS.deletes, ['s:AbCd1234']);
+  assert.deepEqual(counterWrites(CONFIGS), [], 'nothing is decremented without an owner hash');
+});
+
+// KV has no atomic increment, so the counter is documented as best-effort: the link is
+// the durable state and a bookkeeping failure must never fail the caller.
+test('a failed counter write never fails a publish or a revoke', async () => {
+  const ip = '192.0.2.99';
+  const ownerHash = hashOf(ip);
+  const CONFIGS = memoryKV();
+  const realPut = CONFIGS.put.bind(CONFIGS);
+  CONFIGS.put = async (key, value, options) => {
+    if (key.startsWith('own:')) {
+      CONFIGS.puts.push({key, value, options});
+      throw new Error('KV PUT failed: own key');
+    }
+    return realPut(key, value, options);
+  };
+  const published = await worker.fetch(publish({content, target: 'Surge'}, {'CF-Connecting-IP': ip}), {CONFIGS});
+  assert.equal(published.status, 200, 'a counter write failure must not fail the publication');
+  const body = await published.json();
+  assert.ok(CONFIGS.store.has('s:' + body.url.split('/').pop()), 'the record is still stored');
+  assert.equal(CONFIGS.store.has('own:' + ownerHash), false);
+  assert.doesNotMatch(JSON.stringify(body), /KV/);
+
+  // The same address may publish again: the count under-reports, it never blocks.
+  assert.equal((await worker.fetch(publish({content, target: 'Surge'}, {'CF-Connecting-IP': ip}), {CONFIGS})).status, 200);
+
+  const revoked = await worker.fetch(new Request(origin + '/api/publish/' + body.url.split('/').pop(), {
+    method: 'DELETE', headers: {Origin: origin, 'X-Manage-Token': body.manageToken, 'CF-Connecting-IP': ip},
+  }), {CONFIGS});
+  assert.equal(revoked.status, 204, 'a counter failure must not turn a completed revoke into an error');
+  assert.deepEqual(CONFIGS.deletes, ['s:' + body.url.split('/').pop()]);
+
+  // A counter *read* failure fails closed with the generic 503 and no KV detail.
+  const brokenRead = memoryKV();
+  brokenRead.get = async (key) => {
+    if (key.startsWith('own:')) throw new Error('KV GET failed: own:key CONFIGS namespace');
+    return null;
+  };
+  const failed = await worker.fetch(publish({content, target: 'Surge'}, {'CF-Connecting-IP': '192.0.2.100'}), {CONFIGS: brokenRead});
+  assert.equal(failed.status, 503);
+  const text = await failed.text();
+  assert.doesNotMatch(text, /KV |own:|CONFIGS|namespace/);
+  assert.equal(recordWrites(brokenRead).length, 0, 'nothing is written when the count cannot be read');
+});
+
+test('51 real publications from one address: the 51st is refused', async () => {
+  const ip = '203.0.113.253';
+  const ownerHash = hashOf(ip);
+  const CONFIGS = memoryKV();
+  const realNow = Date.now;
+  let clock = realNow();
+  // Step past the 5-minute publish window between calls so this exercises the per-address
+  // cap itself rather than the rate limiter (which would answer first for a 15/5min loop).
+  Date.now = () => clock;
+  try {
+    const published = [];
+    for (let i = 0; i < 51; i += 1) {
+      clock += 6 * 60 * 1000;
+      const response = await worker.fetch(publish({content, target: 'Surge'}, {'CF-Connecting-IP': ip}), {CONFIGS});
+      if (response.status === 200) published.push(await response.json());
+      else {
+        assert.equal(i, 50, 'the first 50 publications must be accepted');
+        assert.equal(response.status, 429);
+        assert.deepEqual(await response.json(), {message: '短链数量已达上限，请先撤销旧链接'});
+      }
+    }
+    assert.equal(published.length, 50);
+    assert.equal(recordWrites(CONFIGS).length, 50);
+    assert.equal(CONFIGS.store.get('own:' + ownerHash), '50');
+    assert.deepEqual(CONFIGS.deletes, [], 'the refusal never deletes an older link');
+
+    // Revoking one of the 50 hands the slot back immediately.
+    const first = published[0];
+    const revoked = await worker.fetch(new Request(origin + '/api/publish/' + first.url.split('/').pop(), {
+      method: 'DELETE', headers: {Origin: origin, 'X-Manage-Token': first.manageToken, 'CF-Connecting-IP': ip},
+    }), {CONFIGS});
+    assert.equal(revoked.status, 204);
+    assert.equal(CONFIGS.store.get('own:' + ownerHash), '49');
+    clock += 6 * 60 * 1000;
+    const replacement = await worker.fetch(publish({content, target: 'Mihomo'}, {'CF-Connecting-IP': ip}), {CONFIGS});
+    assert.equal(replacement.status, 200);
+    assert.equal(CONFIGS.store.get('own:' + ownerHash), '50');
+  } finally {
+    Date.now = realNow;
+  }
+});
+
 test('a full publish bucket rejects new addresses instead of growing without bound', async () => {
   const CONFIGS = memoryKV();
   // One address that already holds a bucket before the table fills.
@@ -532,12 +787,12 @@ test('a full publish bucket rejects new addresses instead of growing without bou
   assert.ok(capped > 0, 'the table must stop accepting new addresses once it is full');
   assert.ok(capped >= 600, 'the table only refuses once ~1000 buckets exist');
   assert.ok(!statuses.slice(capped).includes(422), 'once full, no further new address is counted');
-  assert.equal(CONFIGS.puts.length, 1, 'nothing capped out may reach KV');
+  assert.equal(recordWrites(CONFIGS).length, 1, 'nothing capped out may reach KV');
 
   // Fail closed for a brand-new address, even with a valid payload.
   const fresh = await worker.fetch(publish({content, target: 'Surge'}, {'CF-Connecting-IP': '100.250.250.250'}), {CONFIGS});
   assert.equal(fresh.status, 429);
-  assert.equal(CONFIGS.puts.length, 1);
+  assert.equal(recordWrites(CONFIGS).length, 1);
 
   // An address that already holds a bucket keeps working while the table is full.
   assert.equal((await worker.fetch(publish({content, target: 'Surge'}, {'CF-Connecting-IP': known}), {CONFIGS})).status, 200);

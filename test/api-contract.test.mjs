@@ -324,9 +324,12 @@ test('POST /api/publish is permanent unless ttlSeconds is explicitly sent', asyn
   const body = await permanent.json();
   assert.deepEqual(Object.keys(body).sort(), ['expiresAt', 'manageToken', 'url']);
   assert.equal(body.expiresAt, null, 'the default publication must not expire');
-  assert.equal(puts.length, 1);
-  assert.equal(puts[0].options?.expirationTtl, undefined, 'no expirationTtl when ttlSeconds is omitted');
-  assert.equal(JSON.parse(puts[0].value).expiresAt, null);
+  // A publication writes the record plus one per-address counter key.
+  assert.deepEqual(puts.map(({key}) => key.split(':')[0]), ['s', 'own']);
+  const records = puts.filter(({key}) => key.startsWith('s:'));
+  assert.equal(records.length, 1);
+  assert.equal(records[0].options?.expirationTtl, undefined, 'no expirationTtl when ttlSeconds is omitted');
+  assert.equal(JSON.parse(records[0].value).expiresAt, null);
   const served = await worker.fetch(new Request(body.url), {CONFIGS});
   assert.equal(served.status, 200);
 
@@ -335,7 +338,7 @@ test('POST /api/publish is permanent unless ttlSeconds is explicitly sent', asyn
   const timed = await explicit.json();
   assert.equal(typeof timed.expiresAt, 'string');
   assert.ok(Date.parse(timed.expiresAt) > Date.now());
-  assert.equal(puts[1].options?.expirationTtl, 3600);
+  assert.equal(puts.filter(({key}) => key.startsWith('s:'))[1].options?.expirationTtl, 3600);
 
   let ip = 0;
   for (const ttlSeconds of [0, 60, 604801, '3600', null, true]) {
@@ -344,7 +347,8 @@ test('POST /api/publish is permanent unless ttlSeconds is explicitly sent', asyn
     assert.equal(rejected.status, 400, JSON.stringify(ttlSeconds));
     assert.match((await rejected.json()).message, /有效期/);
   }
-  assert.equal(puts.length, 2, 'rejected TTLs must not write to KV');
+  assert.equal(records.length, 1, 'rejected TTLs must not write a second record');
+  assert.equal(puts.filter(({key}) => key.startsWith('s:')).length, 2, 'rejected TTLs must not write to KV');
 });
 
 test('short-link errors are generic and never reflect the requested path', async () => {
@@ -417,6 +421,56 @@ test('an upstream 200 with an empty body is reported as unavailable, not as succ
     assert.match((await result.json()).message, /暂时未返回可用内容/, name);
   }
 });
+// Cleartext is refused on every host, not just the production domain: a short link is
+// a bearer credential and /api/publish writes durable state. The redirect keeps the
+// path and query so a client that follows it lands on the same resource.
+test('every cleartext host redirects to HTTPS with the path and query intact', async () => {
+  const cases = [
+    ['http://sub.fakeyou.eu.org/s/AbCd1234', 'https://sub.fakeyou.eu.org/s/AbCd1234'],
+    ['http://example.com/s/AbCd1234?x=1&y=%E4%B8%AD%E6%96%87', 'https://example.com/s/AbCd1234?x=1&y=%E4%B8%AD%E6%96%87'],
+    ['http://another-host.example.org/api/health', 'https://another-host.example.org/api/health'],
+    ['http://another-host.example.org/api/publish/AbCd1234', 'https://another-host.example.org/api/publish/AbCd1234'],
+    ['http://203.0.113.9/', 'https://203.0.113.9/'],
+    ['http://sub.fakeyou.eu.org:8443/s/AbCd1234', 'https://sub.fakeyou.eu.org:8443/s/AbCd1234'],
+    ['http://deep.sub.example.net/a/b/c?q=1#frag', 'https://deep.sub.example.net/a/b/c?q=1#frag'],
+  ];
+  for (const [from, to] of cases) {
+    const response = await worker.fetch(new Request(from), {});
+    assert.equal(response.status, 301, from);
+    assert.equal(response.headers.get('location'), to, from);
+    assert.equal(await response.text(), '', 'a redirect carries no body');
+  }
+  // The redirect happens before any route logic: no quota is consumed and no KV is read.
+  const CONFIGS = {get: () => assert.fail('a cleartext request must not touch KV'), put: () => assert.fail('no write'), delete: () => assert.fail('no delete')};
+  const publishOverHttp = await worker.fetch(new Request('http://sub.fakeyou.eu.org/api/publish', {
+    method: 'POST', headers: {Origin: 'http://sub.fakeyou.eu.org', 'Content-Type': 'application/json'},
+    body: JSON.stringify({content: 'trojan://a@node.example.com:443#n', target: 'Surge'}),
+  }), {CONFIGS});
+  assert.equal(publishOverHttp.status, 301);
+  assert.equal(publishOverHttp.headers.get('location'), 'https://sub.fakeyou.eu.org/api/publish');
+});
+
+test('HTTPS requests and loopback over HTTP are never redirected', async () => {
+  for (const url of [ORIGIN + '/api/health', ORIGIN + '/', ORIGIN + '/s/AbCd1234', ORIGIN + '/api/publish']) {
+    const response = await worker.fetch(new Request(url), {});
+    assert.notEqual(response.status, 301, url);
+  }
+  assert.equal((await worker.fetch(new Request(ORIGIN + '/api/health'), {})).status, 200);
+
+  // Local development speaks plain HTTP on loopback; it must reach the routes.
+  const CONFIGS = {get: async () => null, put: async () => {}, delete: async () => {}};
+  for (const url of ['http://localhost:8787/api/health', 'http://127.0.0.1:8787/api/health']) {
+    const response = await worker.fetch(new Request(url), {CONFIGS});
+    assert.equal(response.status, 200, url);
+    assert.equal(response.headers.get('location'), null, url);
+  }
+  for (const url of ['http://localhost:8787/s/AbCd1234', 'http://127.0.0.1:8787/s/AbCd1234']) {
+    const response = await worker.fetch(new Request(url), {CONFIGS});
+    assert.equal(response.status, 404, url);
+  }
+  assert.equal((await worker.fetch(new Request('http://localhost:8787/'), {})).status, 200);
+});
+
 test('cleartext requests redirect to HTTPS and HTTPS responses carry HSTS', async () => {
   const plain = await worker.fetch(new Request('http://sub.fakeyou.eu.org/s/AbCd1234'), {});
   assert.equal(plain.status, 301);

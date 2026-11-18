@@ -38,6 +38,45 @@ const PUBLISH_ATTEMPTS=5;
 // Publishing writes durable state for a small number of callers, so this table is
 // capped far lower than the read-only /api/fetch one.
 const PUBLISH_MAX_BUCKETS=1000;
+// Loopback is the one exception to the HTTPS-only edge: `wrangler dev` serves plain
+// HTTP on it, and it never carries a published link in production.
+const LOCAL_HOSTS=new Set(['localhost','127.0.0.1','[::1]','::1']);
+// A permanent link never expires, so the only thing that bounds how much one caller
+// can park in KV is this per-address cap on live records. 50 is a blunt abuse brake,
+// not an entitlement: the page publishes one link per conversion and revoking an old
+// one is a single click, so a legitimate caller never comes close.
+const OWNER_MAX=50;
+// The per-address counter is housekeeping, not data: it lapses after 30 days so an
+// address that published once long ago leaves no key behind forever. The records
+// themselves are unaffected — a lapsed counter only means the next publish starts
+// counting again from what it finds.
+const OWNER_TTL=30*24*60*60;
+// An expiring record counts while it is live but its KV expiry cannot decrement the
+// counter, so a caller who publishes TTL links and never revokes them keeps a high
+// count until the counter lapses (at most 30 days after the last publish). Accepted:
+// the UI only creates permanent links, and over-counting only ever throttles one
+// address instead of letting it grow without bound.
+const HEX64=/^[0-9a-f]{64}$/;
+const OWNER_LIMIT='短链数量已达上限，请先撤销旧链接';
+// KV has no atomic increment or decrement, so the counter below is best-effort: two
+// concurrent publishes can both read N and both write N+1, letting one address exceed
+// OWNER_MAX by however many requests are in flight, and a counter that lapsed while
+// its records survived starts over from the next publish. That makes it a speed bump
+// against bulk abuse, never a security boundary and never exact accounting. It is also
+// read tolerantly: a missing, empty or malformed key simply means "no count yet", so a
+// pruned counter can never break publishing.
+async function ownerCount(kv,hash){
+ try{const n=Number(await kv.get('own:'+hash));return Number.isFinite(n)&&n>0?Math.floor(n):0}catch{return null}
+}
+// Decrement is clamped at 0 and swallows its own failures: the record is already gone
+// by the time this runs, so bookkeeping must never turn a successful revoke into a 5xx.
+async function releaseOwner(kv,hash){
+ try{
+  const n=Number(await kv.get('own:'+hash));
+  const next=Number.isFinite(n)&&n>0?Math.floor(n)-1:0;
+  await kv.put('own:'+hash,String(next),{expirationTtl:OWNER_TTL});
+ }catch{}
+}
 // Short links are permanent unless the caller explicitly asks for a TTL; the legacy
 // values stay accepted so an older UI (or a script) that still sends ttlSeconds keeps
 // working, but omitting the field means "never expires" and skips expirationTtl.
@@ -78,6 +117,14 @@ async function handlePublish(request,env,url){
   if(!TTLS.has(data.ttlSeconds))return shortText('有效期参数不在允许范围内',400);
   ttl=data.ttlSeconds;
  }
+ // One address cannot park unbounded permanent state in KV. The count is read before
+ // the record is written and bumped after it lands, so a failed write under-counts
+ // (absorbed by the cap) instead of inflating the counter.
+ let ownerHash;
+ try{ownerHash=await sha256Hex(ip)}catch{return shortText(SHORT_DOWN,503)}
+ const owned=await ownerCount(kv,ownerHash);
+ if(owned===null)return shortText(SHORT_DOWN,503);
+ if(owned>=OWNER_MAX)return shortText(OWNER_LIMIT,429);
  // The short token is the only thing in the URL, so it must be unguessable enough
  // that a published profile is not discoverable by enumeration.
  let token='';
@@ -92,8 +139,13 @@ async function handlePublish(request,env,url){
  try{manageHash=await sha256Hex(manageToken)}catch{return shortText(SHORT_DOWN,503)}
  const createdAt=new Date();
  const expiresAt=typeof ttl==='number'?new Date(createdAt.getTime()+ttl*1000):null;
- const record={content:data.content,target:data.target,createdAt:createdAt.toISOString(),expiresAt:expiresAt?expiresAt.toISOString():null,manageHash};
+ // Only the SHA-256 of the address is stored: the record needs a stable owner handle
+ // for its quota counter, never the address itself (no IP, no account, no UA in KV).
+ const record={content:data.content,target:data.target,createdAt:createdAt.toISOString(),expiresAt:expiresAt?expiresAt.toISOString():null,manageHash,ownerHash};
  try{await kv.put('s:'+token,JSON.stringify(record),expiresAt?{expirationTtl:ttl}:{})}catch{return shortText(SHORT_DOWN,503)}
+ // Best-effort (see ownerCount): the link is already live and about to be returned, so
+ // a counter write that fails only under-counts the address and must not fail the call.
+ try{await kv.put('own:'+ownerHash,String(owned+1),{expirationTtl:OWNER_TTL})}catch{}
  return json({url:url.origin+'/s/'+token,expiresAt:expiresAt?expiresAt.toISOString():null,manageToken});
 }
 async function serveShort(request,env,url){
@@ -142,6 +194,10 @@ async function revokeShort(request,env,url,pathToken){
  try{digest=await sha256Hex(provided)}catch{return shortText(SHORT_DOWN,503)}
  if(!equalHex(digest,record.manageHash.toLowerCase()))return shortText('管理令牌无效',403);
  try{await kv.delete('s:'+token)}catch{return shortText('撤销失败，请稍后重试',503)}
+ // The record is gone, so this returns the caller's budget. Best-effort by design:
+ // a legacy record without ownerHash (written before the cap) and a failed counter
+ // write both leave the count as-is rather than failing a completed revocation.
+ if(record&&typeof record.ownerHash==='string'&&HEX64.test(record.ownerHash))await releaseOwner(kv,record.ownerHash);
  return new Response(null,{status:204,headers:secure});
 }
 export function validateSource(value,ownHost){
@@ -160,8 +216,11 @@ async function limitedText(response,max=LIMIT){
 }
 export default {async fetch(request,env){
  const url=new URL(request.url);
- // Short links are bearer credentials: never serve them over cleartext HTTP.
- if(url.protocol==='http:'&&/(^|\.)fakeyou\.eu\.org$/i.test(url.hostname)){const target=new URL(url);target.protocol='https:';return Response.redirect(target.href,301);}
+ // Short links are bearer credentials and the publish/revoke API writes durable state,
+ // so no host is served over cleartext: every http request is bounced to the same
+ // path and query on https. Loopback is exempt so `wrangler dev` (and the tests that
+ // speak HTTP) keep working locally; it never carries a published link in production.
+ if(url.protocol==='http:'&&!LOCAL_HOSTS.has(url.hostname.toLowerCase())){const target=new URL(url);target.protocol='https:';return Response.redirect(target.href,301);}
  if(url.pathname==='/api/health')return json({ok:true,engine:'Sub-Store 2.44.16',targets:['Surge','Mihomo'],...buildInfo});
  if(url.pathname==='/api/fetch'){
   if(request.method!=='POST')return json({message:'请使用 POST 请求'},405,{Allow:'POST'});
