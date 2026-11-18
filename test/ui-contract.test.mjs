@@ -109,8 +109,9 @@ test('the publish request body carries content and target only', () => {
   assert.match(app, /error\?\.name === 'TimeoutError'/);
 });
 
-test('the success status says the link is permanent by default', () => {
-  assert.match(app, /const PUBLISH_DONE = '订阅链接已生成，默认永久有效。';/);
+test('the success status is concise and preserves conversion warnings', () => {
+  assert.match(app, /const PUBLISH_DONE = '订阅链接已生成。';/);
+  assert.doesNotMatch(html, /链接默认永久有效/);
   assert.match(app, /publishStatus\.textContent = current\.hasWarnings[\s\S]{0,120}PUBLISH_DONE[\s\S]{0,80}: PUBLISH_DONE;/);
   // Both intermediate stages are announced with the requested wording.
   assert.match(app, /publishStatus\.textContent = '正在生成配置…';/);
@@ -163,6 +164,8 @@ test('radio values stay identical to the converter target whitelist', () => {
   assert.deepEqual(values, ['Surge', 'Mihomo']);
   // One preset must be checked so app.js can read :checked on first submit.
   assert.equal([...html.matchAll(/name="target"[^>]*checked/g)].length, 1);
+  assert.match(html, /name="target" value="Surge" checked/);
+  assert.match(app, /input\[name="target"\]\[value="Surge"\]'\)\.checked = true/);
   // The value must come from the checked radio, not from a hardcoded default.
   assert.match(app, /input\[name="target"\]:checked/);
   assert.match(app, /targetInput\?\.value|input\[name="target"\]:checked'\)\.value/);
@@ -681,7 +684,7 @@ test('theme.js is a blocking head script so the first paint never flashes', () =
 // --- publish / revoke state machine ---------------------------------------
 
 test('a successful revoke re-arms the submit button', () => {
-  const handler = app.slice(app.indexOf("revokePublished.addEventListener('click'"), app.indexOf("if (/iPhone|iPad|iPod/i)"));
+  const handler = app.slice(app.indexOf("revokePublished.addEventListener('click'"), app.indexOf('// About dialog.'));
   assert.ok(handler, 'the revoke handler must exist');
   const final = handler.slice(handler.lastIndexOf('} finally {'));
   const guard = final.indexOf('if (publication === current)');
@@ -701,7 +704,7 @@ test('a request that outlives its timeout is aborted', () => {
   assert.match(publishBody, /signal: controller\.signal/);
   assert.match(publishBody.slice(publishBody.indexOf('} catch (error) {')), /^} catch \(error\) \{\n {4}controller\.abort\(\);/,
     'a late publish must not resolve into a page that already gave up');
-  const revoke = app.slice(app.indexOf("revokePublished.addEventListener('click'"), app.indexOf("if (/iPhone|iPad|iPod/i)"));
+  const revoke = app.slice(app.indexOf("revokePublished.addEventListener('click'"), app.indexOf('// About dialog.'));
   assert.match(revoke, /new AbortController\(\)/);
   assert.match(revoke, /signal: controller\.signal/);
   assert.match(revoke.slice(revoke.indexOf('} catch (error) {')), /^} catch \(error\) \{\n {4}controller\.abort\(\);/);

@@ -342,7 +342,6 @@ h2 {
   width: 100%;
   margin-top: 22px;
 }
-.link-duration { margin-top: 10px; font-size: 13px; color: var(--muted); }
 
 /* ---------- status + notices ---------- */
 
@@ -520,9 +519,39 @@ h2 {
 .source-input::placeholder { font-size: 16px; }
 .preview summary { font-size: 14px; }
 
+.import-guide {
+  margin-top: 28px;
+  border-top: 1px solid var(--line);
+}
+.import-guide summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-height: 48px;
+  font-size: 15px;
+  font-weight: 600;
+  list-style: none;
+  cursor: pointer;
+}
+.import-guide summary::-webkit-details-marker { display: none; }
+.import-guide summary::after {
+  content: "";
+  width: 6px;
+  height: 6px;
+  margin-right: 4px;
+  border: solid var(--muted);
+  border-width: 0 1.5px 1.5px 0;
+  transform: rotate(45deg);
+}
+.import-guide[open] summary::after { transform: rotate(225deg); }
+.import-guide p { padding-bottom: 8px; color: var(--muted); }
+.guide-mihomo { display: none; }
+#main:has(input[value="Mihomo"]:checked) .guide-mihomo { display: block; }
+#main:has(input[value="Mihomo"]:checked) .guide-surge { display: none; }
+
 @media (min-width: 800px) {
   .site-header { height: 76px; }
-  .page-head { padding: 38px 0 28px; }
+  .page-head { padding: 38px 0 28px; padding-top: clamp(38px, calc(22dvh - 90px), 96px); }
   h1 { font-size: 42px; }
   #convert-form {
     display: grid;

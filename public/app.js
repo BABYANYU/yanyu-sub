@@ -17,7 +17,7 @@ const MAX_URL_LENGTH = 8192;
 const CONVERT_TIMEOUT_MS = 90000;
 const PUBLISH_TIMEOUT_MS = 30000;
 // Hosted links are permanent: the client never asks for a shorter lifetime.
-const PUBLISH_DONE = '订阅链接已生成，默认永久有效。';
+const PUBLISH_DONE = '订阅链接已生成。';
 // Exact test used by convertSources() in converter.js to treat a source as a link.
 const URL_INPUT = /^https?:\/\/[^\s]+$/;
 const URL_LINE = /^https?:\/\/\S+$/i;
@@ -360,11 +360,7 @@ revokePublished.addEventListener('click', async () => {
   }
 });
 
-if (/iPhone|iPad|iPod/i.test(navigator.userAgent)) {
-  form.querySelector('input[value="Surge"]').checked = true;
-} else if (/Windows/i.test(navigator.userAgent)) {
-  form.querySelector('input[value="Mihomo"]').checked = true;
-}
+form.querySelector('input[name="target"][value="Surge"]').checked = true;
 
 // About dialog. Native <dialog> handles Escape and the focus trap; the close button is
 // a submit inside <form method="dialog">, so it also works when this module never runs.

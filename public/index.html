@@ -28,7 +28,7 @@
       <div class="page-head">
         <h1 id="page-title">订阅转换</h1>
       </div>
-      <form id="convert-form" novalidate>
+      <form id="convert-form" autocomplete="off" novalidate>
         <section class="field-group" aria-labelledby="sources-title">
           <div class="group-head"><h2 id="sources-title">订阅来源</h2></div>
           <p id="sources-help" class="sr-only">粘贴一个订阅链接，或一整段订阅文本。</p>
@@ -40,8 +40,7 @@
             <label class="target-option"><input type="radio" name="target" value="Surge" checked><span class="target-description"><strong>Surge</strong></span><span class="radio-indicator" aria-hidden="true"></span></label>
             <label class="target-option"><input type="radio" name="target" value="Mihomo"><span class="target-description"><strong>Mihomo</strong></span><span class="radio-indicator" aria-hidden="true"></span></label>
           </fieldset>
-          <button id="publish" class="button button-primary" type="submit" aria-describedby="link-duration">生成订阅链接</button>
-          <p id="link-duration" class="link-duration">链接默认永久有效</p>
+          <button id="publish" class="button button-primary" type="submit">生成订阅链接</button>
         </section>
       </form>
       <div id="publish-status" class="publish-status" role="status" aria-live="polite" aria-atomic="true"></div>
@@ -56,6 +55,11 @@
         </div>
         <details class="preview"><summary>查看配置</summary><label class="sr-only" for="config-preview">生成的配置内容</label><textarea id="config-preview" readonly spellcheck="false" wrap="off"></textarea></details>
       </section>
+      <details class="import-guide">
+        <summary>导入说明</summary>
+        <p class="guide-surge">在 Surge 的配置列表中选择从 URL 下载，再粘贴生成的订阅链接。</p>
+        <p class="guide-mihomo">在 Bettbox 的配置页添加 URL 配置，粘贴生成的订阅链接。</p>
+      </details>
     </main>
   </div>
 
