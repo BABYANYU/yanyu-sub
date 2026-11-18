@@ -51,15 +51,14 @@
           <label class="sr-only" for="published-url">订阅链接</label>
           <input id="published-url" class="published-url" type="text" readonly autocapitalize="off" autocomplete="off" autocorrect="off" spellcheck="false">
           <div class="published-actions"><button id="copy-published" class="button button-primary" type="button">复制链接</button><button id="revoke-published" class="button button-quiet" type="button">撤销链接</button></div>
-          <p class="publish-note">链接等同于密码，请勿公开分享。撤销操作仅在当前页面可用。</p>
+          <div class="published-notes">
+            <p class="guide-surge">在 Surge 的配置列表中选择从 URL 下载，再粘贴订阅链接。</p>
+            <p class="guide-mihomo">在 Bettbox 的配置页添加 URL 配置，再粘贴订阅链接。</p>
+            <p>链接等同于密码，请勿公开分享。撤销操作仅在当前页面可用。</p>
+          </div>
         </div>
         <details class="preview"><summary>查看配置</summary><label class="sr-only" for="config-preview">生成的配置内容</label><textarea id="config-preview" readonly spellcheck="false" wrap="off"></textarea></details>
       </section>
-      <details class="import-guide">
-        <summary>导入说明</summary>
-        <p class="guide-surge">在 Surge 的配置列表中选择从 URL 下载，再粘贴生成的订阅链接。</p>
-        <p class="guide-mihomo">在 Bettbox 的配置页添加 URL 配置，粘贴生成的订阅链接。</p>
-      </details>
     </main>
   </div>
 

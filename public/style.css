@@ -419,12 +419,13 @@ h2 {
   min-width: 0;
   min-height: 44px;
 }
-.publish-note {
+.published-notes {
   margin-top: 10px;
   font-size: 12px;
   line-height: 1.6;
   color: var(--muted);
 }
+.published-notes p + p:last-child { margin-top: 4px; }
 .preview {
   margin-top: 18px;
   padding-top: 4px;
@@ -519,32 +520,6 @@ h2 {
 .source-input::placeholder { font-size: 16px; }
 .preview summary { font-size: 14px; }
 
-.import-guide {
-  margin-top: 28px;
-  border-top: 1px solid var(--line);
-}
-.import-guide summary {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  min-height: 48px;
-  font-size: 15px;
-  font-weight: 600;
-  list-style: none;
-  cursor: pointer;
-}
-.import-guide summary::-webkit-details-marker { display: none; }
-.import-guide summary::after {
-  content: "";
-  width: 6px;
-  height: 6px;
-  margin-right: 4px;
-  border: solid var(--muted);
-  border-width: 0 1.5px 1.5px 0;
-  transform: rotate(45deg);
-}
-.import-guide[open] summary::after { transform: rotate(225deg); }
-.import-guide p { padding-bottom: 8px; color: var(--muted); }
 .guide-mihomo { display: none; }
 #main:has(input[value="Mihomo"]:checked) .guide-mihomo { display: block; }
 #main:has(input[value="Mihomo"]:checked) .guide-surge { display: none; }
@@ -588,7 +563,7 @@ h2 {
   }
   .published-url { font-size: 16px; background: var(--field); }
   .published-actions { margin: 0; }
-  .publish-note { grid-column: 1 / -1; margin-top: 0; font-size: 14px; }
+  .published-notes { grid-column: 1 / -1; margin-top: 0; font-size: 14px; }
 }
 
 @media (min-width: 561px) and (max-width: 799px) {
