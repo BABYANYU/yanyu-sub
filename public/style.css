@@ -419,13 +419,6 @@ h2 {
   min-width: 0;
   min-height: 44px;
 }
-.published-notes {
-  margin-top: 10px;
-  font-size: 12px;
-  line-height: 1.6;
-  color: var(--muted);
-}
-.published-notes p + p:last-child { margin-top: 4px; }
 .preview {
   margin-top: 18px;
   padding-top: 4px;
@@ -520,10 +513,6 @@ h2 {
 .source-input::placeholder { font-size: 16px; }
 .preview summary { font-size: 14px; }
 
-.guide-mihomo { display: none; }
-#main:has(input[value="Mihomo"]:checked) .guide-mihomo { display: block; }
-#main:has(input[value="Mihomo"]:checked) .guide-surge { display: none; }
-
 @media (min-width: 800px) {
   .site-header { height: 76px; }
   .page-head { padding: 38px 0 28px; padding-top: clamp(38px, calc(22dvh - 90px), 96px); }
@@ -563,7 +552,6 @@ h2 {
   }
   .published-url { font-size: 16px; background: var(--field); }
   .published-actions { margin: 0; }
-  .published-notes { grid-column: 1 / -1; margin-top: 0; font-size: 14px; }
 }
 
 @media (min-width: 561px) and (max-width: 799px) {

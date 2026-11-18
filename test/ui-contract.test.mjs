@@ -300,7 +300,6 @@ test('the result panel hosts the subscribe link with copy and revoke', () => {
   for (const id of ['copy-published', 'revoke-published']) {
     assert.match(html.match(new RegExp(`<button[^>]*id="${id}"[^>]*>`))?.[0] || '', /type="button"/);
   }
-  assert.match(block, /链接等同于密码，请勿公开分享/);
 });
 
 test('revoking addresses the short token and keeps the manage token in a header', () => {
