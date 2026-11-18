@@ -45,7 +45,7 @@ const LOCAL_HOSTS=new Set(['localhost','127.0.0.1','[::1]','::1']);
 // can park in KV is this per-address cap on live records. 50 is a blunt abuse brake,
 // not an entitlement: the page publishes one link per conversion and revoking an old
 // one is a single click, so a legitimate caller never comes close.
-const OWNER_MAX=50;
+const OWNER_MAX=100;
 // The per-address counter is housekeeping, not data: it lapses after 30 days so an
 // address that published once long ago leaves no key behind forever. The records
 // themselves are unaffected — a lapsed counter only means the next publish starts

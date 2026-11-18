@@ -3,7 +3,7 @@
 // Map so the suite runs offline and can inspect what would be written. Every test
 // uses its own CF-Connecting-IP because the publish bucket allows 15 per 5 minutes.
 // The per-address quota tests reuse one address on purpose (a few calls, well inside
-// that bucket) and the 51-link loop steps the clock instead of the address.
+// that bucket) and the 101-link loop steps the clock instead of the address.
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {createHash} from 'node:crypto';
@@ -529,37 +529,37 @@ test('no short-link route lists the KV namespace', async () => {
 // A permanent record never expires, so nothing but this counter bounds how much one
 // caller can leave in KV. The publish bucket allows 15 calls per 5 minutes, so the
 // counter is seeded to stand in for earlier publications; the assertions then cover
-// the exact boundary (50 live = allowed, 51st = refused) and the revoke path back.
+// the exact boundary (100 live = allowed, 101st = refused) and the revoke path back.
 
-test('one address may hold 50 live links, the 51st is refused and a revoke frees the slot', async () => {
+test('one address may hold 100 live links, the 101st is refused and a revoke frees the slot', async () => {
   const ip = '203.0.113.250';
   const ownerHash = hashOf(ip);
-  const CONFIGS = memoryKV(new Map([['own:' + ownerHash, '49']]));
+  const CONFIGS = memoryKV(new Map([['own:' + ownerHash, '99']]));
 
   const fiftieth = await worker.fetch(publish({content, target: 'Surge'}, {'CF-Connecting-IP': ip}), {CONFIGS});
-  assert.equal(fiftieth.status, 200, 'the 50th live record is still allowed');
+  assert.equal(fiftieth.status, 200, 'the 100th live record is still allowed');
   const published = await fiftieth.json();
-  assert.equal(CONFIGS.store.get('own:' + ownerHash), '50', 'the counter follows the record');
+  assert.equal(CONFIGS.store.get('own:' + ownerHash), '100', 'the counter follows the record');
 
   const refused = await worker.fetch(publish({content, target: 'Surge'}, {'CF-Connecting-IP': ip}), {CONFIGS});
-  assert.equal(refused.status, 429, 'the 51st live record is refused');
+  assert.equal(refused.status, 429, 'the 101st live record is refused');
   assert.deepEqual(await refused.json(), {message: '短链数量已达上限，请先撤销旧链接'});
   assert.equal(refused.headers.get('cache-control'), 'private, no-store');
   assert.equal(refused.headers.get('x-content-type-options'), 'nosniff');
   assert.equal(recordWrites(CONFIGS).length, 1, 'the refused publish stores no record');
-  assert.equal(CONFIGS.store.get('own:' + ownerHash), '50', 'the refused publish does not inflate the counter');
+  assert.equal(CONFIGS.store.get('own:' + ownerHash), '100', 'the refused publish does not inflate the counter');
 
   // Revoking one link hands the slot back to the same address.
   const revoke = await worker.fetch(new Request(origin + '/api/publish/' + published.url.split('/').pop(), {
     method: 'DELETE', headers: {Origin: origin, 'X-Manage-Token': published.manageToken, 'CF-Connecting-IP': ip},
   }), {CONFIGS});
   assert.equal(revoke.status, 204);
-  assert.equal(CONFIGS.store.get('own:' + ownerHash), '49', 'a successful revoke decrements the counter');
+  assert.equal(CONFIGS.store.get('own:' + ownerHash), '99', 'a successful revoke decrements the counter');
   assert.equal(counterWrites(CONFIGS).at(-1).options.expirationTtl, 30 * 24 * 60 * 60, 'the decrement refreshes the counter TTL');
 
   const again = await worker.fetch(publish({content, target: 'Mihomo'}, {'CF-Connecting-IP': ip}), {CONFIGS});
   assert.equal(again.status, 200, 'after a revoke the same address may publish again');
-  assert.equal(CONFIGS.store.get('own:' + ownerHash), '50');
+  assert.equal(CONFIGS.store.get('own:' + ownerHash), '100');
   assert.equal(recordWrites(CONFIGS).length, 2);
 
   // The cap is per address: a different address keeps its own budget.
@@ -571,7 +571,7 @@ test('one address may hold 50 live links, the 51st is refused and a revoke frees
 test('the cap refusal is distinguishable from the rate limit and leaks no owner data', async () => {
   const ip = '203.0.113.252';
   const ownerHash = hashOf(ip);
-  const CONFIGS = memoryKV(new Map([['own:' + ownerHash, '50']]));
+  const CONFIGS = memoryKV(new Map([['own:' + ownerHash, '100']]));
   const response = await worker.fetch(publish({content, target: 'Surge'}, {'CF-Connecting-IP': ip}), {CONFIGS});
   assert.equal(response.status, 429);
   const text = await response.text();
@@ -728,7 +728,7 @@ test('a failed counter write never fails a publish or a revoke', async () => {
   assert.equal(recordWrites(brokenRead).length, 0, 'nothing is written when the count cannot be read');
 });
 
-test('51 real publications from one address: the 51st is refused', async () => {
+test('101 real publications from one address: the 101st is refused', async () => {
   const ip = '203.0.113.253';
   const ownerHash = hashOf(ip);
   const CONFIGS = memoryKV();
@@ -739,32 +739,32 @@ test('51 real publications from one address: the 51st is refused', async () => {
   Date.now = () => clock;
   try {
     const published = [];
-    for (let i = 0; i < 51; i += 1) {
+    for (let i = 0; i < 101; i += 1) {
       clock += 6 * 60 * 1000;
       const response = await worker.fetch(publish({content, target: 'Surge'}, {'CF-Connecting-IP': ip}), {CONFIGS});
       if (response.status === 200) published.push(await response.json());
       else {
-        assert.equal(i, 50, 'the first 50 publications must be accepted');
+        assert.equal(i, 100, 'the first 100 publications must be accepted');
         assert.equal(response.status, 429);
         assert.deepEqual(await response.json(), {message: '短链数量已达上限，请先撤销旧链接'});
       }
     }
-    assert.equal(published.length, 50);
-    assert.equal(recordWrites(CONFIGS).length, 50);
-    assert.equal(CONFIGS.store.get('own:' + ownerHash), '50');
+    assert.equal(published.length, 100);
+    assert.equal(recordWrites(CONFIGS).length, 100);
+    assert.equal(CONFIGS.store.get('own:' + ownerHash), '100');
     assert.deepEqual(CONFIGS.deletes, [], 'the refusal never deletes an older link');
 
-    // Revoking one of the 50 hands the slot back immediately.
+    // Revoking one of the 100 hands the slot back immediately.
     const first = published[0];
     const revoked = await worker.fetch(new Request(origin + '/api/publish/' + first.url.split('/').pop(), {
       method: 'DELETE', headers: {Origin: origin, 'X-Manage-Token': first.manageToken, 'CF-Connecting-IP': ip},
     }), {CONFIGS});
     assert.equal(revoked.status, 204);
-    assert.equal(CONFIGS.store.get('own:' + ownerHash), '49');
+    assert.equal(CONFIGS.store.get('own:' + ownerHash), '99');
     clock += 6 * 60 * 1000;
     const replacement = await worker.fetch(publish({content, target: 'Mihomo'}, {'CF-Connecting-IP': ip}), {CONFIGS});
     assert.equal(replacement.status, 200);
-    assert.equal(CONFIGS.store.get('own:' + ownerHash), '50');
+    assert.equal(CONFIGS.store.get('own:' + ownerHash), '100');
   } finally {
     Date.now = realNow;
   }
