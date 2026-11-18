@@ -417,3 +417,12 @@ test('an upstream 200 with an empty body is reported as unavailable, not as succ
     assert.match((await result.json()).message, /暂时未返回可用内容/, name);
   }
 });
+test('cleartext requests redirect to HTTPS and HTTPS responses carry HSTS', async () => {
+  const plain = await worker.fetch(new Request('http://sub.fakeyou.eu.org/s/AbCd1234'), {});
+  assert.equal(plain.status, 301);
+  assert.equal(plain.headers.get('location'), 'https://sub.fakeyou.eu.org/s/AbCd1234');
+  const health = await worker.fetch(new Request(ORIGIN + '/api/health'), {});
+  assert.match(health.headers.get('strict-transport-security') || '', /max-age=\d+/);
+  const page = await worker.fetch(new Request(ORIGIN + '/'), {});
+  assert.match(page.headers.get('strict-transport-security') || '', /max-age=\d+/);
+});

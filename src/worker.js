@@ -6,7 +6,7 @@ const LIMIT=1024*1024;
 // through the same edge as the UI: ship the restrictive CSP there as well so a
 // 404/405/429/503 on any route still carries the full header set.
 const CSP_API="default-src 'none'; frame-ancestors 'none'; base-uri 'none'";
-const secure={'Cache-Control':'private, no-store','X-Content-Type-Options':'nosniff','Referrer-Policy':'no-referrer','X-Frame-Options':'DENY','Permissions-Policy':'camera=(), microphone=(), geolocation=()','Content-Security-Policy':CSP_API};
+const secure={'Cache-Control':'private, no-store','X-Content-Type-Options':'nosniff','Referrer-Policy':'no-referrer','X-Frame-Options':'DENY','Permissions-Policy':'camera=(), microphone=(), geolocation=()','Content-Security-Policy':CSP_API,'Strict-Transport-Security':'max-age=15552000'};
 const rate=new Map();
 let lastPrune=0;
 function json(body,status=200,extra={}){return Response.json(body,{status,headers:{...secure,...extra}});}
@@ -160,6 +160,8 @@ async function limitedText(response,max=LIMIT){
 }
 export default {async fetch(request,env){
  const url=new URL(request.url);
+ // Short links are bearer credentials: never serve them over cleartext HTTP.
+ if(url.protocol==='http:'&&/(^|\.)fakeyou\.eu\.org$/i.test(url.hostname)){const target=new URL(url);target.protocol='https:';return Response.redirect(target.href,301);}
  if(url.pathname==='/api/health')return json({ok:true,engine:'Sub-Store 2.44.16',targets:['Surge','Mihomo'],...buildInfo});
  if(url.pathname==='/api/fetch'){
   if(request.method!=='POST')return json({message:'请使用 POST 请求'},405,{Allow:'POST'});
