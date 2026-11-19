@@ -1,4 +1,4 @@
-# 本站托管短订阅链接 — 2026-11-17
+# 托管订阅链接使用指南
 
 在订阅转换页面新增“生成订阅链接”：把刚生成的配置存进 Cloudflare KV，返回一个本站短链，可直接导入 Surge / Mihomo。短链形如 `https://sub.fakeyou.eu.org/s/Ab3dE9kZ`（路径固定为 8 位 `[A-Za-z0-9]` token，示例中为 `Ab3dE9kZ`）。
 
@@ -39,60 +39,9 @@
 - 页面重新生成会替换当前显示的链接，但**旧链接不会自动失效**：永久链接会一直可用，直到被手动撤销；带 TTL 的旧链接在原 TTL 内仍然可用。换链接后请撤销旧的。
 - 永久链接的风险：因为不会自动过期，泄露的链接在被撤销前持续可下载完整配置。默认行为不是“更安全”，而是“不打扰”；请只在确定长期使用时保留永久链接。
 
-## 运维：如何删除一条永久链接
-
-没有管理令牌时，撤销只能由维护者操作 KV：
-
-```bash
-npx wrangler kv key delete 's:Ab3dE9kZ' --namespace-id $KV_NAMESPACE_ID --remote
-```
-
-（key 名在代码中是 `s:<8 位 token>`；删除后该链接立即 404，无需重新部署。）
-
-## 部署与配置
-
-`wrangler.json` 与 `scripts/deployment.json` 都声明同一个 KV 绑定，缺一不可：
-
-```json
-"kv_namespaces": [
-  { "binding": "CONFIGS", "id": "$KV_NAMESPACE_ID" }
-]
-```
-
-- 绑定名就是 Worker 里的 `env.CONFIGS`，namespace id 为 `$KV_NAMESPACE_ID`。
-- 该 namespace 必须在部署目标账号里已存在，否则 `wrangler deploy` 直接失败（不会自动创建）。
-- 部署令牌（`CF_API_TOKEN`）需要 **Workers KV Storage: Edit** 与 **Workers Scripts: Edit** 权限，否则绑定写入被拒；权限不足时表现为部署时报 “authentication error / unauthorized to access KV namespace”。
-- `name` / `main` / `compatibility_date` / `workers_dev` / `preview_urls` / `observability` 保持原值；`routes` 仍只写在 `scripts/deployment.json`（自定义域名是一次性配置），不要加回 `wrangler.json`。
-- 部署仍是 `wrangler deploy --config wrangler.json --no-bundle`：绑定随配置生效，无需额外命令，也没有 migrations。
-
-## 上线验收
-
-`scripts/verify-live.mjs` 在原有健康版本、首页契约、静态资源、CSP/nosniff/Referrer-Policy、`/source.tar.gz` gzip、`/api/fetch` 403/405/422/404 护栏之外，新增：
-
-- 首页契约扩到 `#theme-toggle`、`#about-dialog`、`#publish` 与 `src="./theme.js"`，安全头补 `X-Frame-Options: DENY` 与 `object-src 'none'`；
-- **资产映射清扫**：导入本次构建的 `src/assets.generated.js`（asset map 由 `public/` 目录生成），逐个 `HEAD` 每个映射路径并比对 `Content-Type`，再把线上 HTML 的 `src="./…"`/`href="./…"` 引用逐个探测 200——既抓“映射里的文件没上线”，也抓“页面引用了没映射的文件”；
-- `/source.tar.gz` 不只嗅 gzip 魔数，而是**解压**（gunzip）后确认 tar 内确有 `LICENSE`、`NOTICE.md`、`src/worker.js`、`src/converter.js`、`public/index.html`、`public/theme.js`、`package-lock.json`，防止空包或错包混过；
-- 短链发布/撤销护栏：`GET`/`HEAD /s/AAAAAAAA` 必须 404 且 `Cache-Control` 含 `no-store`、不是 HTML；`/s/not-a-token`、`/s/AAAAAAAA/extra` 必须 404；`GET /api/publish` 必须 405 + `Allow: POST`；跨源 `POST /api/publish` 与跨源 `DELETE /api/publish/<token>` 必须 403，且在落库前拒绝（响应里不出现 64 位管理令牌）；
-
-下面三条是永久化时就有的短链探测：
-
-- `GET /s/AAAAAAAA`（一个从未发布过的 8 位 token）必须 **404**；
-- 该响应 `content-type` 必须存在且 **不是 `text/html`**，正文里也不能出现 HTML 首行 —— 防止短链路由缺失时回落到网页外壳（那会让“失效链接”看起来像成功）；
-- 该响应不得 `Cache-Control: public`。
-
-验收只做只读探测：**不调用 `/api/publish`、不创建任何真实发布内容**，因此不会污染 KV，也不需要在 CI 里提供 KV 写权限。默认改永久后这条探针保持不变：不存在的 token 仍然必须 404，与记录是否设了 TTL 无关；永久记录只是不会再因为 KV 过期而消失，探测不能依赖“过期”来制造 404。
-
 ## 合规与提醒
 
 - 短链里是**含节点密码/凭据的完整配置**。生成前请确认对方可信；不要把链接当作“只读分享链接”发给不可信的人。
 - **默认永久意味着没有自动回收。** 发出去就等于长期授权，撤销是唯一的下线手段；请把“撤销链接”当作常规操作，而不是等它过期。
 - 站点仍是 AGPL-3.0，修改后的完整可构建源码继续通过 `https://sub.fakeyou.eu.org/source.tar.gz` 提供，短链功能不改变这一点，也不把任何用户配置打进源码包。
 - 配置文本属于用户数据，不是本项目源码；KV 中存的是用户自己生成的配置文本，撤销即删除（带 TTL 的链接在到期时也删除）。
-
-## 相关改动文件
-
-- `wrangler.json`、`scripts/deployment.json`：新增 `CONFIGS` KV 绑定。
-- `scripts/verify-live.mjs`：短链 404 / 非 HTML 探测（永久化后不变，仍不创建发布）。
-- `test/deployment-contract.test.mjs`：KV 绑定一致性、无硬编码密钥、短链探测、本文档契约断言（含“默认永久”）。
-- `README.md`：使用说明与隐私边界同步（默认永久、显式 TTL 可选、撤销即删除）。
-- `src/worker.js`、`public/*`、`test/publish.test.mjs`、`test/api-contract`、`test/ui-contract`：由短链永久化的其他改动负责。

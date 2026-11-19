@@ -447,10 +447,8 @@ test('documentation records the hosted short link contract', async () => {
   assert.match(doc, /节点密码/, 'readers must be warned the config contains node credentials');
   assert.match(doc, /\/source\.tar\.gz/, 'the AGPL source archive stays downloadable');
   assert.match(doc, /\/api\/publish/);
-  // The acceptance section must describe what verify-live really does today.
-  assert.match(doc, /theme\.js/, 'the documented acceptance list must include the theme asset');
-  assert.match(doc, /资产映射|asset map|全部映射资源/, 'the documented acceptance list must include the asset-map sweep');
-  assert.match(doc, /解压|gunzip/, 'the documented acceptance must say the archive is decompressed and inspected');
+  assert.doesNotMatch(doc, /^## (?:上线验收|相关改动文件|部署与配置)\b/m,
+    'the hosted-link guide is for users; deployment checks are tested directly');
 });
 
 test('README documents permanent hosted links and how to revoke them', async () => {
@@ -463,28 +461,22 @@ test('README documents permanent hosted links and how to revoke them', async () 
   assert.doesNotMatch(readme, /7 天（默认）|默认 7 天|最长 30 天|上限 30 天/, 'README must not claim a 7-day default or a 30-day ceiling');
 });
 
-test('documentation records the build, archive and deploy hardening', async () => {
-  const doc = await read('documentation/DEPLOYMENT-2026-11-18.md');
-  // Asset map: directory driven + strict content types.
-  assert.match(doc, /public\//, 'the doc must describe where the asset map comes from');
-  assert.match(doc, /Content-Type|content type|MIME/, 'the doc must describe the content-type map');
-  assert.match(doc, /404/, 'the doc must explain the silent-404 regression it prevents');
-  // Source archive: required files fail the build, public/ walked whole.
-  assert.match(doc, /CHANGELOG/, 'the doc must record the removed phantom entries');
-  assert.match(doc, /必需/, 'the doc must say required source files abort the build');
-  assert.match(doc, /theme\.js/, 'the doc must note theme.js is archived');
-  // Deploy: permissions, concurrency, rollback.
-  assert.match(doc, /Workers KV Storage: Edit/, 'the doc must state the KV permission the deploy token needs');
-  assert.match(doc, /回滚/, 'the doc must document rollback');
-  assert.match(doc, /concurrency|cancel-in-progress/, 'the doc must document deploy serialisation');
-  assert.match(doc, /verify-live\.mjs/, 'the doc must describe what acceptance checks');
-  assert.match(doc, /deployment\.json/, 'the doc must state how wrangler.json and deployment.json stay in sync');
+test('corresponding-source archive includes the user-facing guide and excludes maintenance history', async () => {
+  const files = await collectSources();
+  assert.ok(files.includes('documentation/HOSTED-LINKS-2026-11-17.md'));
+  assert.ok(!files.includes('documentation/DEPLOYMENT-2026-11-18.md'));
+  assert.ok(!files.includes('documentation/UI-2026-11-17.md'));
+  const archivedHistory = ['DEPLOYMENT-2026-11-18.md','UI-2026-11-17.md'];
+  for (const file of archivedHistory) assert.ok(!files.some((path) => path.endsWith('/'+file)));
+  assert.ok(files.includes('LICENSE'));
+  assert.ok(files.includes('vendor/LICENSE'));
+  assert.ok(files.includes('NOTICE.md'));
 });
 
-test('README maintenance notes match the hardened pipeline', async () => {
+test('README links the user guide and corresponding source without deployment history', async () => {
   const readme = await read('README.md');
-  assert.match(readme, /Workers KV Storage[^\n]*Edit/, 'README must state the KV permission the deploy token needs');
-  assert.match(readme, /回滚|rollback/, 'README must keep the rollback procedure');
-  assert.match(readme, /verify-live|核对线上/, 'README must describe the post-deploy check');
-  assert.match(readme, /source\.tar\.gz/, 'README must point at the AGPL source archive');
+  assert.match(readme, /HOSTED-LINKS-2026-11-17\.md/, 'README must link the user-facing hosted-link guide');
+  assert.match(readme, /source\.tar\.gz/, 'README must link corresponding source');
+  assert.doesNotMatch(readme, /DEPLOYMENT-2026-11-18|Workers KV Storage: Edit|verify-live\.mjs/,
+    'the user-facing README must not contain deployment operations');
 });

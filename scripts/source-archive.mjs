@@ -18,7 +18,7 @@ export const SOURCES = [
   'LICENSE',
   'NOTICE.md',
   'README.md',
-  'documentation',
+  'documentation/HOSTED-LINKS-2026-11-17.md',
   'package.json',
   'package-lock.json',
   'wrangler.json',
