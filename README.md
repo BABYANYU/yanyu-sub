@@ -52,4 +52,4 @@ API 使用、响应字段、限制和管理说明见[托管链接 API 与管理�
 
 ## 许可证
 
-本项目代码按 **AGPL-3.0-only** 发布；第三方组件许可与上游来源见 `LICENSE`、`vendor/LICENSE` 和 `NOTICE.md`。可构建源码通过站点 [`/source.tar.gz`](https://sub.fakeyou.eu.org/source.tar.gz) 提供。生成的节点配置属于用户数据，不是本项目源码；含有节点凭据时请妥善保管。
+本项目代码按 **AGPL-3.0-only** 发布；第三方组件来源与许可见 `LICENSE`、`vendor/LICENSE` 和 `NOTICE.md`。可构建源码通过站点 [`/source.tar.gz`](https://sub.fakeyou.eu.org/source.tar.gz) 提供。生成的节点配置属于用户数据，不是本项目源码；含有节点凭据时请妥善保管。
