@@ -9,6 +9,7 @@
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
 | `POST` | `/api/publish` | 正文 `{content, target, ttlSeconds?}`，返回 `{url, manageToken, expiresAt}`（永久时为 `null`） |
+| `POST` | `/api/plugin/publish` | PagerMaid 专用，需 Bearer 令牌。提交 `{sources, target}` 转换，或提交 `{content, target, ttlSeconds?}` 发布现有配置 |
 | `GET`/`HEAD` | `/s/<token>` | 返回配置文本（`text/plain; charset=utf-8`），不存在则 404 |
 | `DELETE` | `/api/publish/<token>` | 撤销，需请求头 `X-Manage-Token`，成功 204 |
 
@@ -18,6 +19,7 @@
 - `POST /api/publish` 与 `DELETE` 共用同一限流桶：每 IP 每 5 分钟 15 次（`/api/fetch` 单独限制为每分钟 20 次）。
 - `POST`/`DELETE` 要求同源 `Origin` 且 JSON 请求头，跨源 403，且限流在校验之后（跨源请求不消耗配额）。
 - 未绑定 KV 时返回 503「短链接服务未配置」，不会静默退化为一次性下载。
+- 插件短链复用 `CONFIGS` 绑定与发布配额。传入节点文本会保存生成的配置。传入 HTTPS 订阅时会保存来源，每次 GET 短链重新抓取并转换，来源不出现在返回的短链里。插件发布接口支持指定 365 天有效期。
 
 ## 凭据模型
 
@@ -26,7 +28,7 @@
 - 不要把链接贴到公开群组、issue、截图或日志里；泄露后请立刻撤销。
 - 链接不写入 URL 之外的任何地方：不上 cookie、不上 localStorage、不进 Worker 日志（`observability.enabled` 仍为 `false`）。
 - 管理令牌（`manageToken`，32 字节随机数的十六进制）只在生成时返回一次，页面仅保存在内存中，刷新即失。丢失令牌就无法撤销；**永久链接没有到期兜底**，这时只能请维护者从 KV 删除对应 `s:<token>` 记录。
-- 服务端只保存管理令牌的 **SHA-256 哈希**（`manageHash`），并以定长时间比较；KV 被读也无法还原令牌。KV 记录的字段为 `content`、`target`、`createdAt`、`expiresAt`（永久链接为 `null`）、`manageHash`、`ownerHash` —— 即配置文本 + 元数据 + 令牌哈希 + IP 的 SHA-256；没有原始 IP、UA、来源 URL 或账号信息。每个地址最多 100 条存活链接，另维护 30 天过期的 `own:<ownerHash>` 计数键。
+- 服务端只保存管理令牌的 **SHA-256 哈希**（`manageHash`）。短链存储配置文本，动态插件短链存储来源地址。记录均包含目标格式、创建时间、到期时间、管理令牌哈希和 IP 哈希。每个地址的发布计数上限为 100，计数键 `own:<ownerHash>` 在 30 天后过期。
 - `GET /s/<token>` 的响应带 `Cache-Control: private, no-store`、`nosniff`、`Referrer-Policy: no-referrer`、`X-Robots-Tag: noindex, nofollow`；非 8 位 token 一律 404，不回显路径、不做目录探测。
 - token 用 `crypto.getRandomValues` 拒绝采样生成（跳过 256/62 的偏置），并在写入前检查是否已存在，避免枚举命中。
 

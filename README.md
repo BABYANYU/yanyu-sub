@@ -6,7 +6,7 @@
 
 先在设备上安装 Surge 或 Mihomo 兼容客户端（例如 Windows 上的 Bettbox），然后：
 
-1. 粘贴 HTTPS 订阅链接，或直接粘贴节点文本。
+1. 粘贴 HTTPS 订阅链接，或直接粘贴节点文本。HTTPS 订阅由本站 Cloudflare Worker 拉取。
 2. 选择 Surge 或 Mihomo，生成配置后下载或复制。
 3. 在客户端导入文件，或粘贴配置文本。
 

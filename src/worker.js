@@ -1,6 +1,7 @@
 import assets from './assets.generated.js';
 import buildInfo from './build-info.generated.js';
 import {validateResolvedSource} from './source-policy.js';
+import {convertTexts} from '../public/converter.js';
 const LIMIT=1024*1024;
 // JSON and short-link responses are never rendered as documents, but they travel
 // through the same edge as the UI: ship the restrictive CSP there as well so a
@@ -57,6 +58,8 @@ const OWNER_TTL=30*24*60*60;
 // the UI only creates permanent links, and over-counting only ever throttles one
 // address instead of letting it grow without bound.
 const HEX64=/^[0-9a-f]{64}$/;
+// SHA-256 verifier for a randomly generated 256-bit PagerMaid credential.
+const PLUGIN_TOKEN_HASH='6c7ccb3018fd066d9a7111bbcd91cdb88bb682a3f08b4938c428caf0ff8a9d67';
 const OWNER_LIMIT='短链数量已达上限，请先撤销旧链接';
 // KV has no atomic increment or decrement, so the counter below is best-effort: two
 // concurrent publishes can both read N and both write N+1, letting one address exceed
@@ -96,9 +99,13 @@ const shortText=(message,status,extra)=>json({message},status,extra);
 const SHORT_DOWN='短链接暂时不可用，请稍后重试';
 const SHORT_MISSING='短链接不存在';
 function binding(env){const kv=env?.CONFIGS;return kv&&typeof kv.get==='function'&&typeof kv.put==='function'&&typeof kv.delete==='function'?kv:null}
-async function handlePublish(request,env,url){
+async function handlePublish(request,env,url,plugin=false){
  if(request.method!=='POST')return shortText('请使用 POST 请求',405,{Allow:'POST'});
- if(request.headers.get('Origin')!==url.origin||!request.headers.get('content-type')?.startsWith('application/json'))return shortText('请求来源不匹配',403);
+ if(!request.headers.get('content-type')?.startsWith('application/json')||(!plugin&&request.headers.get('Origin')!==url.origin))return shortText('请求来源不匹配',403);
+ if(plugin){
+  const token=request.headers.get('Authorization')?.match(/^Bearer ([0-9a-f]{64})$/)?.[1];
+  if(!token||!equalHex(await sha256Hex(token),env?.PLUGIN_TOKEN_HASH??PLUGIN_TOKEN_HASH))return shortText('插件令牌无效',401);
+ }
  const kv=binding(env);if(!kv)return shortText('短链接服务未配置',503);
  const ip=request.headers.get('CF-Connecting-IP')||'unknown';if(!publishLimited(ip))return shortText('请求过于频繁，请稍后重试',429);
  let text;
@@ -109,12 +116,23 @@ async function handlePublish(request,env,url){
  let data;
  try{data=JSON.parse(text)}catch{return shortText('请求内容不是有效的 JSON',400)}
  if(!data||typeof data!=='object'||Array.isArray(data))return shortText('请求内容不是有效的 JSON 对象',400);
- if(typeof data.content!=='string'||!data.content.trim())return shortText('配置内容不能为空',422);
+ const sources=plugin&&Array.isArray(data.sources)?data.sources:null;
+ let content=data.content;
+ if(!sources&&(typeof content!=='string'||!content.trim()))return shortText('配置内容不能为空',422);
  if(typeof data.target!=='string'||!TARGETS.has(data.target))return shortText('输出格式必须是 Surge 或 Mihomo',422);
+ let dynamic=false;
+ if(sources){
+  try{
+   if(!sources.length||sources.length>4||sources.some(source=>typeof source!=='string'||!source.trim()))throw Error('SOURCE');
+   dynamic=sources.some(isRemoteSource);
+   content=await convertPluginSources(sources,data.target,env,url.hostname);
+  }catch{return shortText('无法转换订阅，请检查来源及目标格式',422)}
+ }
+ if(new TextEncoder().encode(content).length>PUBLISH_MAX)return shortText('配置超过 2 MiB',413);
  // Permanent by default: no ttlSeconds means no expirationTtl and expiresAt=null.
  let ttl;
  if(data.ttlSeconds!==undefined){
-  if(!TTLS.has(data.ttlSeconds))return shortText('有效期参数不在允许范围内',400);
+  if(!TTLS.has(data.ttlSeconds)&&!(plugin&&data.ttlSeconds===365*86400))return shortText('有效期参数不在允许范围内',400);
   ttl=data.ttlSeconds;
  }
  // One address cannot park unbounded permanent state in KV. The count is read before
@@ -141,7 +159,7 @@ async function handlePublish(request,env,url){
  const expiresAt=typeof ttl==='number'?new Date(createdAt.getTime()+ttl*1000):null;
  // Only the SHA-256 of the address is stored: the record needs a stable owner handle
  // for its quota counter, never the address itself (no IP, no account, no UA in KV).
- const record={content:data.content,target:data.target,createdAt:createdAt.toISOString(),expiresAt:expiresAt?expiresAt.toISOString():null,manageHash,ownerHash};
+ const record={...(dynamic?{sources}:{content}),target:data.target,createdAt:createdAt.toISOString(),expiresAt:expiresAt?expiresAt.toISOString():null,manageHash,ownerHash};
  try{await kv.put('s:'+token,JSON.stringify(record),expiresAt?{expirationTtl:ttl}:{})}catch{return shortText(SHORT_DOWN,503)}
  // Best-effort (see ownerCount): the link is already live and about to be returned, so
  // a counter write that fails only under-counts the address and must not fail the call.
@@ -160,7 +178,7 @@ async function serveShort(request,env,url){
  if(raw===null||raw===undefined)return shortText(SHORT_MISSING,404);
  let record;
  try{record=JSON.parse(raw)}catch{record=null}
- if(!record||typeof record.content!=='string')return shortText(SHORT_MISSING,404);
+ if(!record||!(typeof record.content==='string'||Array.isArray(record.sources)))return shortText(SHORT_MISSING,404);
  // KV expiry is authoritative. A permanent record stores expiresAt=null and never
  // lapses here; a record with a real timestamp (older data) keeps its original expiry.
  if(typeof record.expiresAt==='string'){
@@ -168,7 +186,14 @@ async function serveShort(request,env,url){
   if(Number.isFinite(expiry)&&expiry<=Date.now())return shortText(SHORT_MISSING,404);
  }
  const headers={'Content-Type':'text/plain; charset=utf-8','Cache-Control':'private, no-store','X-Content-Type-Options':'nosniff','Referrer-Policy':'no-referrer','X-Frame-Options':'DENY','X-Robots-Tag':'noindex, nofollow','Content-Security-Policy':CSP_API};
- return new Response(request.method==='HEAD'?null:record.content,{status:200,headers});
+ if(request.method==='HEAD')return new Response(null,{status:200,headers});
+ let content=record.content;
+ if(Array.isArray(record.sources)){
+  if(!limited('short:'+token))return shortText('请求过于频繁，请稍后重试',429);
+  try{content=await convertPluginSources(record.sources,record.target,env,url.hostname)}
+  catch{return shortText('暂时无法更新上游订阅',502)}
+ }
+ return new Response(content,{status:200,headers});
 }
 async function revokeShort(request,env,url,pathToken){
  if(request.method!=='DELETE')return shortText('请求方法不受支持',405,{Allow:'DELETE'});
@@ -214,6 +239,28 @@ async function limitedText(response,max=LIMIT){
  while(true){const {done,value}=await reader.read();if(done)break;total+=value.length;if(total>max){await reader.cancel();throw Error('SIZE')}chunks.push(value)}
  const data=new Uint8Array(total);let at=0;for(const c of chunks){data.set(c,at);at+=c.length}return new TextDecoder('utf-8',{fatal:true}).decode(data);
 }
+function isRemoteSource(source){return /^https?:\/\/\S+$/i.test(source.trim())}
+async function readRemoteSource(source,env,ownHost){
+ if(env.SKIP_DNS_PREFLIGHT!==true&&env.SKIP_DNS_PREFLIGHT!=='true')await validateResolvedSource(source,{ownHost});
+ const controller=new AbortController();const timer=setTimeout(()=>controller.abort(),10000);
+ try{
+  const response=await fetch(source.href,{method:'GET',redirect:'manual',signal:controller.signal,headers:{'User-Agent':'Surge/6.0 YanyuSub/1.0','Accept':'text/plain, application/yaml, application/json, */*'},cache:'no-store'});
+  if(!response.ok)return {message:response.status>=300&&response.status<400?'订阅链接发生跳转，请填写最终的 HTTPS 地址':'订阅源暂时未返回可用内容'};
+  const text=await limitedText(response);
+  if(!text.trim())return {message:'订阅源暂时未返回可用内容'};
+  if(/^\s*<(?:!doctype|html)/i.test(text))return {message:'来源返回了网页，请检查是否填写订阅链接'};
+  return {text};
+ }finally{clearTimeout(timer)}
+}
+async function convertPluginSources(sources,target,env,host){
+ const bodies=await Promise.all(sources.map(async value=>{
+  if(!isRemoteSource(value))return value;
+  const result=await readRemoteSource(validateSource(value.trim(),host),env,host);
+  if(typeof result.text!=='string')throw Error('SOURCE');
+  return result.text;
+ }));
+ return convertTexts({target,sources:bodies}).content;
+}
 export default {async fetch(request,env){
  const url=new URL(request.url);
  // Short links are bearer credentials and the publish/revoke API writes durable state,
@@ -230,21 +277,12 @@ export default {async fetch(request,env){
    let text;
    try{text=await limitedText(request,16384)}catch(error){if(error?.message==='SIZE')return json({message:'请求内容过长'},413);throw error}
    const data=JSON.parse(text);const source=validateSource(data.url,url.hostname);
-   if(env.SKIP_DNS_PREFLIGHT!==true&&env.SKIP_DNS_PREFLIGHT!=='true')await validateResolvedSource(source,{ownHost:url.hostname});
-   const controller=new AbortController();const timer=setTimeout(()=>controller.abort(),10000);
-   try{
-    const response=await fetch(source.href,{method:'GET',redirect:'manual',signal:controller.signal,headers:{'User-Agent':'Surge/6.0 YanyuSub/1.0','Accept':'text/plain, application/yaml, application/json, */*'},cache:'no-store'});
-    if(!response.ok)return json({message:response.status>=300&&response.status<400?'订阅链接发生跳转，请填写最终的 HTTPS 地址':'订阅源暂时未返回可用内容'},422);
-    const body=await limitedText(response);
-    // A 200 with no content is not a subscription: returning it as success makes the
-    // UI report a "please paste your subscription" error for a link the user did enter.
-    if(!body.trim())return json({message:'订阅源暂时未返回可用内容'},422);
-    if(/^\s*<(?:!doctype|html)/i.test(body))return json({message:'来源返回了网页，请检查是否填写订阅链接'},422);
-    return json({text:body});
-   }finally{clearTimeout(timer)}
+   const result=await readRemoteSource(source,env,url.hostname);
+   return json(result,result.message?422:200);
   }catch(error){return json({message:error?.message==='SIZE'?'订阅内容超过 1 MiB':error?.message==='SOURCE_DENIED'?'订阅地址未通过网络策略检查':'订阅读取失败，请检查 HTTPS 链接或粘贴订阅内容'},error?.message==='SIZE'?413:422)}
  }
  if(url.pathname==='/api/publish')return handlePublish(request,env,url);
+ if(url.pathname==='/api/plugin/publish')return handlePublish(request,env,url,true);
  if(url.pathname.startsWith('/api/publish/'))return revokeShort(request,env,url,url.pathname.slice('/api/publish/'.length));
  if(url.pathname.startsWith('/s/'))return serveShort(request,env,url);
  if(url.pathname.startsWith('/api/'))return json({message:'接口不存在'},404);
